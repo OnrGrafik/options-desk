@@ -1,171 +1,131 @@
-import Head from "next/head";
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useContext } from "react";
+import { FontCtx } from "./_app";
 import {
   fetchSpot, fetchInstruments, fetchAllOptions, fetchOHLCV,
   aggregateByStrike, findLevels, classifyStrikes,
 } from "../lib/gex";
 
-// ═══════════════════════════════════════════════════════════
-// HELPERS
-// ═══════════════════════════════════════════════════════════
+// ─── helpers ──────────────────────────────────────────────
 const fmt = (n) => n ? Math.round(n).toLocaleString("en-US") : "—";
-const fmtB = (n) => {
-  if (!n && n !== 0) return "—";
-  const abs = Math.abs(n);
-  if (abs >= 1e9) return `${(n/1e9).toFixed(2)}B`;
-  if (abs >= 1e6) return `${(n/1e6).toFixed(1)}M`;
-  if (abs >= 1e3) return `${(n/1e3).toFixed(0)}K`;
-  return n.toFixed(1);
-};
+const fmtM = (n) => { const a = Math.abs(n); if (a >= 1e9) return `${(n/1e9).toFixed(2)}B`; if (a >= 1e6) return `${(n/1e6).toFixed(1)}M`; if (a >= 1e3) return `${(n/1e3).toFixed(0)}K`; return n.toFixed(1); };
 
-function useCountUp(target, ms = 700) {
+function useCountUp(target, ms = 600) {
   const [v, setV] = useState(target);
   const prev = useRef(target);
   useEffect(() => {
     if (target === prev.current) return;
-    const start = prev.current, t0 = performance.now();
-    let f;
-    const tick = (now) => {
-      const t = Math.min((now - t0) / ms, 1);
-      const e = 1 - Math.pow(1 - t, 3);
-      setV(start + (target - start) * e);
-      if (t < 1) f = requestAnimationFrame(tick);
-      else prev.current = target;
-    };
+    const s = prev.current, t0 = performance.now(); let f;
+    const tick = (now) => { const t = Math.min((now-t0)/ms,1), e=1-Math.pow(1-t,3); setV(s+(target-s)*e); if(t<1) f=requestAnimationFrame(tick); else prev.current=target; };
     f = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(f);
   }, [target, ms]);
   return v;
 }
 
-// ═══════════════════════════════════════════════════════════
-// DATA FETCHING HOOK
-// ═══════════════════════════════════════════════════════════
+// ─── data hook ────────────────────────────────────────────
 function useGexData() {
-  const [state, setState] = useState({
-    spot: 0, strikes: [], classified: [], options: [], ohlcv: null,
-    levels: {}, totals: { gamma: 0, vanna: 0, charm: 0 },
-    stats: { rows: 0, totalInst: 0, expiries: 0 },
-    change24h: 0, dvol: 52.4, funding: 0.001, basis: 8.2,
-    loading: true, error: null, progress: "", lastUpdate: null,
-  });
+  const [allOptions, setAllOptions] = useState([]);
+  const [spot, setSpot] = useState(0);
+  const [ohlcv, setOhlcv] = useState(null);
+  const [stats, setStats] = useState({ rows: 0, totalInst: 0, expiries: 0 });
+  const [change24h, setChange24h] = useState(0);
+  const [dvol, setDvol] = useState(52);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [progress, setProgress] = useState("");
+  const [lastUpdate, setLastUpdate] = useState(null);
 
   const load = useCallback(async (silent = false) => {
-    if (!silent) setState(s => ({ ...s, loading: true, error: null }));
+    if (!silent) { setLoading(true); setError(null); }
     try {
-      setState(s => ({ ...s, progress: "Spot fiyat alınıyor..." }));
-      const spot = await fetchSpot();
-      if (!spot) throw new Error("Spot fiyat alınamadı");
+      setProgress("Spot fiyat alınıyor...");
+      const s = await fetchSpot();
+      if (!s) throw new Error("Spot alınamadı");
+      setSpot(s);
 
-      fetchOHLCV("60", 48).then(ohlcv => {
-        if (ohlcv?.close) {
-          const n = ohlcv.close.length;
-          const chg = n > 24 ? ((ohlcv.close[n-1] - ohlcv.close[n-25]) / ohlcv.close[n-25] * 100) : 0;
-          setState(s => ({ ...s, ohlcv, change24h: chg }));
+      fetchOHLCV("60", 48).then(d => {
+        if (d?.close) {
+          const n = d.close.length;
+          setOhlcv(d);
+          if (n > 24) setChange24h((d.close[n-1] - d.close[n-25]) / d.close[n-25] * 100);
         }
       }).catch(() => {});
 
-      setState(s => ({ ...s, progress: "Opsiyon zinciri çekiliyor..." }));
+      setProgress("Opsiyon zinciri çekiliyor...");
       const instruments = await fetchInstruments();
-      if (!instruments.length) throw new Error("Opsiyon verisi yok");
 
-      const { options, stats } = await fetchAllOptions(instruments, spot, (pct, rows, exps) => {
-        setState(s => ({ ...s, progress: `Analiz: %${pct} · ${rows} opt · ${exps} vade` }));
+      const { options, stats: st } = await fetchAllOptions(instruments, s, (pct, rows, exps) => {
+        setProgress(`Analiz: %${pct} · ${rows} opt · ${exps} vade`);
       });
+      setAllOptions(options);
+      setStats(st);
 
-      setState(s => ({ ...s, progress: "GEX hesaplanıyor..." }));
-      const agg = aggregateByStrike(options);
-      const levels = findLevels(agg, spot, options);
-      const classified = classifyStrikes(agg, spot);
-      const totals = {
-        gamma: agg.reduce((a, x) => a + x.netGex, 0),
-        vanna: agg.reduce((a, x) => a + x.vannaNet, 0),
-        charm: agg.reduce((a, x) => a + x.charmNet, 0),
-      };
-      // ATM IV from nearest option
-      const atmOpt = options.filter(o => o.type === "call").sort((a, b) => Math.abs(a.strike - spot) - Math.abs(b.strike - spot))[0];
-      const dvol = atmOpt ? atmOpt.iv * 100 : 52;
-
-      setState(s => ({
-        ...s, spot, strikes: agg, classified, options, levels, totals, stats,
-        dvol, loading: false, error: null, lastUpdate: new Date(), progress: "",
-      }));
+      const atmIV = options.filter(o => o.type === "call").sort((a, b) => Math.abs(a.strike - s) - Math.abs(b.strike - s))[0]?.iv;
+      if (atmIV) setDvol(atmIV * 100);
+      setLastUpdate(new Date());
+      setLoading(false);
     } catch (e) {
-      setState(s => ({ ...s, loading: false, error: e.message }));
+      setError(e.message); setLoading(false);
     }
   }, []);
 
-  useEffect(() => { load(); const iv = setInterval(() => load(true), 5 * 60000); return () => clearInterval(iv); }, [load]);
+  useEffect(() => { load(); const iv = setInterval(() => load(true), 5*60000); return () => clearInterval(iv); }, [load]);
 
-  return { ...state, reload: () => load() };
+  return { allOptions, spot, ohlcv, stats, change24h, dvol, loading, error, progress, lastUpdate, reload: () => load() };
 }
 
-// ═══════════════════════════════════════════════════════════
-// SIDEBAR
-// ═══════════════════════════════════════════════════════════
-function Sidebar({ data, expiry, setExpiry }) {
+// ─── Sidebar ──────────────────────────────────────────────
+function Sidebar({ spot, levels, totals, stats, dvol, change24h, expiry, setExpiry }) {
   return (
     <aside className="sidebar">
       <div className="brand">
         <div className="brand-mark">₿</div>
         <div>
           <div className="brand-name">Options Desk</div>
-          <div className="brand-sub">Vol &amp; Gamma · Deribit Live</div>
+          <div className="brand-sub mono">Deribit Live · GEX</div>
         </div>
       </div>
 
       <div className="sb-section">
-        <div className="sb-label">Underlying</div>
-        <div className="sb-item active">
-          <span className="sb-item-key tabular">BTC/USD</span>
-          <span className="sb-item-val">
-            <span style={{ color: "var(--text)" }}>{fmt(data.spot)}</span>
-            <span className={data.change24h >= 0 ? "pos" : "neg"} style={{ marginLeft: 8 }}>
-              {data.change24h >= 0 ? "+" : ""}{data.change24h.toFixed(2)}%
-            </span>
-          </span>
-        </div>
-      </div>
-
-      <div className="sb-section">
-        <div className="sb-label">Vade filtresi</div>
+        <div className="sb-label">Vade Filtresi</div>
         <div className="sb-chip-row">
-          {["all", "0-7d", "8-45d", "45d+"].map(e => (
-            <button key={e} className={`sb-chip ${expiry === e ? "active" : ""}`} onClick={() => setExpiry(e)}>
-              {e === "all" ? "Tümü" : e}
-            </button>
+          {[["all","Tümü"],["0-7d","0-7g"],["8-45d","8-45g"],["45d+","45g+"]].map(([v,l]) => (
+            <button key={v} className={`sb-chip ${expiry===v?"active":""}`} onClick={() => setExpiry(v)}>{l}</button>
           ))}
         </div>
       </div>
 
       <div className="sb-section">
-        <div className="sb-label">Piyasa verileri</div>
-        <SbStat label="ATM IV" value={`${data.dvol.toFixed(1)}%`} />
-        <SbStat label="DVOL" value={data.dvol.toFixed(1)} />
-        <SbStat label="Funding" value={`${(data.funding * 100).toFixed(3)}%`} pos={data.funding >= 0} />
-        <SbStat label="Basis (90g)" value={`+${data.basis.toFixed(1)}%`} pos />
-        <SbStat label="Net GEX" value={fmtB(data.totals.gamma) + "$"} pos={data.totals.gamma >= 0} />
-        <SbStat label="Vanna" value={fmtB(data.totals.vanna) + "$"} />
-        <SbStat label="Charm" value={fmtB(data.totals.charm) + "$"} />
+        <div className="sb-label">Piyasa</div>
+        {[
+          ["Spot", `$${fmt(spot)}`],
+          ["24h", `${change24h >= 0 ? "+" : ""}${change24h.toFixed(2)}%`, change24h >= 0 ? "pos" : "neg"],
+          ["ATM IV", `${dvol.toFixed(1)}%`],
+          ["Net GEX", fmtM(totals.gamma) + "$", totals.gamma >= 0 ? "pos" : "neg"],
+          ["Vanna", fmtM(totals.vanna) + "$"],
+          ["Charm", fmtM(totals.charm) + "$"],
+        ].map(([l, v, cls], i) => (
+          <div key={i} className="sb-item">
+            <span style={{ color: "var(--text-mute)", fontSize: "var(--font-xs)" }}>{l}</span>
+            <span className={`mono ${cls || ""}`} style={{ fontSize: "var(--font-xs)", color: "var(--text)" }}>{v}</span>
+          </div>
+        ))}
       </div>
 
       <div className="sb-section">
-        <div className="sb-label">Seviyeler</div>
+        <div className="sb-label">Kilit Seviyeler</div>
         {[
-          { label: "Call Wall", val: data.levels.callWall, pct: data.levels.callWallPct, cls: "cw" },
-          { label: "Put Wall", val: data.levels.putWall, pct: data.levels.putWallPct, cls: "pw" },
-          { label: "Zero Gamma", val: data.levels.zeroGamma, pct: data.levels.zeroGammaPct, cls: "zg" },
-          { label: "Max Pain", val: data.levels.maxPain, pct: data.levels.maxPainPct, cls: "mp" },
-          { label: "EM High", val: data.levels.emHigh, pct: data.levels.emHighPct, cls: "" },
-          { label: "EM Low", val: data.levels.emLow, pct: data.levels.emLowPct, cls: "" },
-        ].map((r, i) => (
+          ["Call Wall", levels.callWall, levels.callWallPct, "var(--call)"],
+          ["EM High", levels.emHigh, levels.emHighPct, "var(--em)"],
+          ["Zero Gamma", levels.zeroGamma, levels.zeroGammaPct, "var(--zero-gamma)"],
+          ["Max Pain", levels.maxPain, levels.maxPainPct, "var(--max-pain)"],
+          ["EM Low", levels.emLow, levels.emLowPct, "var(--em)"],
+          ["Put Wall", levels.putWall, levels.putWallPct, "var(--put)"],
+        ].map(([l, v, pct, color], i) => (
           <div key={i} className="sb-item">
-            <span className={`sb-item-key tag ${r.cls}`} style={{ fontSize: 10, letterSpacing: "0.06em" }}>{r.label}</span>
-            <span className="sb-item-val">
-              <span style={{ color: "var(--text)" }}>${fmt(r.val)}</span>
-              {r.pct && <span className={parseFloat(r.pct) >= 0 ? "pos" : "neg"} style={{ marginLeft: 6, fontSize: 9 }}>
-                {parseFloat(r.pct) >= 0 ? "+" : ""}{r.pct}%
-              </span>}
+            <span style={{ color, fontSize: "var(--font-xs)" }}>{l}</span>
+            <span className="mono" style={{ fontSize: "var(--font-xs)", color: "var(--text)" }}>
+              ${fmt(v)}{pct ? ` ${pct >= 0 ? "+" : ""}${pct}%` : ""}
             </span>
           </div>
         ))}
@@ -173,270 +133,527 @@ function Sidebar({ data, expiry, setExpiry }) {
 
       <div className="sb-section" style={{ marginTop: "auto" }}>
         <div className="sb-label">Chain</div>
-        <SbStat label="Opsiyonlar" value={data.stats.rows} />
-        <SbStat label="Strike" value={data.strikes.length} />
-        <SbStat label="Vade" value={data.stats.expiries} />
+        {[["Opsiyonlar", stats.rows], ["Strike", "-"], ["Vade", stats.expiries]].map(([l, v], i) => (
+          <div key={i} className="sb-item">
+            <span style={{ color: "var(--text-mute)", fontSize: "var(--font-xs)" }}>{l}</span>
+            <span className="mono" style={{ fontSize: "var(--font-xs)", color: "var(--text)" }}>{v}</span>
+          </div>
+        ))}
       </div>
     </aside>
   );
 }
-function SbStat({ label, value, pos }) {
-  return (
-    <div className="sb-item">
-      <span className="sb-item-key" style={{ color: "var(--text-mute)", fontSize: 10, letterSpacing: "0.08em" }}>{label}</span>
-      <span className="sb-item-val" style={{ color: pos === true ? "var(--pos)" : pos === false ? "var(--neg)" : "var(--text)", fontSize: 11 }}>
-        {value}
-      </span>
-    </div>
-  );
-}
 
-// ═══════════════════════════════════════════════════════════
-// HERO
-// ═══════════════════════════════════════════════════════════
-function Hero({ data }) {
-  const animSpot = useCountUp(data.spot);
-  const animChg = useCountUp(data.change24h);
-  const isPositive = data.totals.gamma >= 0;
+// ─── GEX Profile Canvas Chart ─────────────────────────────
+function GexChart({ strikes, spot, levels, ohlcv, expiry }) {
+  const canvasRef = useRef(null);
+  const ctrRef = useRef(null);
+  const [tooltip, setTooltip] = useState(null);
+  const [tooltipPos, setTooltipPos] = useState({ x: 0, y: 0 });
 
-  const closes = data.ohlcv?.close || [];
-  const sparkW = 380, sparkH = 56;
-  const min = Math.min(...closes), max = Math.max(...closes), range = max - min || 1;
-  const sparkPath = closes.length > 1
-    ? closes.map((c, i) => `${i === 0 ? "M" : "L"} ${(i / (closes.length - 1)) * sparkW} ${sparkH - ((c - min) / range) * sparkH}`).join(" ")
-    : "";
+  const draw = useCallback(() => {
+    const canvas = canvasRef.current, ctr = ctrRef.current;
+    if (!canvas || !ctr || !strikes.length) return;
 
-  const gammaPct = Math.max(0, Math.min(100, ((data.totals.gamma + 50e6) / 250e6) * 100));
-  const { emHigh, emLow, callWall, putWall, maxPain, zeroGamma } = data.levels;
-  const emRange = (emHigh || 0) - (emLow || 0);
-  const spotPos = emRange > 0 ? ((data.spot - (emLow || 0)) / emRange) * 100 : 50;
+    const W = ctr.clientWidth, H = ctr.clientHeight;
+    canvas.width = W * 2; canvas.height = H * 2;
+    canvas.style.width = W + "px"; canvas.style.height = H + "px";
+    const ctx = canvas.getContext("2d"); ctx.scale(2, 2);
 
-  return (
-    <section className="hero">
-      <div className="hero-left">
-        <div className="hero-kicker">
-          <span>BTC / USD</span>
-          <span className="dot">·</span>
-          <span>Deribit Index</span>
-          <span className="dot">·</span>
-          <span>Spot · {data.lastUpdate ? data.lastUpdate.toLocaleTimeString("tr-TR", { hour: "2-digit", minute: "2-digit" }) : "—"} UTC</span>
-        </div>
-        <h1 className="hero-price tabular">
-          <span>{Math.floor(animSpot).toLocaleString("en-US")}</span>
-          <span className="currency">USD</span>
-        </h1>
-        <div className="hero-meta">
-          <span className={`change-pill ${animChg < 0 ? "neg" : ""}`}>
-            {animChg >= 0 ? "+" : ""}{animChg.toFixed(2)}%
-            <span style={{ color: "var(--text-mute)", marginLeft: 4 }}>· 24h</span>
-          </span>
-          {closes.length > 1 && (
-            <span className="session-note">
-              Range <b>${fmt(Math.min(...closes))}</b> – <b>${fmt(Math.max(...closes))}</b>
-              <span style={{ color: "var(--text-mute)" }}> · 48h</span>
-            </span>
-          )}
-        </div>
+    const splitX = Math.floor(W * 0.56);
+    const pad = { top: 48, bottom: 58, left: 68, right: 10 };
+    const gPad = { left: 8, right: 90 };
 
-        {/* Sparkline */}
-        {sparkPath && (
-          <svg width={sparkW} height={sparkH + 8} style={{ marginTop: 20, display: "block" }}>
-            <defs>
-              <linearGradient id="sparkFill" x1="0" x2="0" y1="0" y2="1">
-                <stop offset="0%" stopColor="var(--accent)" stopOpacity="0.2" />
-                <stop offset="100%" stopColor="var(--accent)" stopOpacity="0" />
-              </linearGradient>
-            </defs>
-            <path d={`${sparkPath} L ${sparkW} ${sparkH} L 0 ${sparkH} Z`} fill="url(#sparkFill)" />
-            <path d={sparkPath} fill="none" stroke="var(--accent)" strokeWidth="1.4" />
-          </svg>
-        )}
+    const lo = spot * 0.82, hi = spot * 1.18;
+    const yS = (p) => pad.top + ((hi - p) / (hi - lo)) * (H - pad.top - pad.bottom);
 
-        <p className="pull" style={{ marginTop: 32 }}>
-          Net gamma exposure prints{" "}
-          <em>{isPositive ? "pozitif" : "negatif"}</em>{" "}
-          {isPositive
-            ? "— dealer hedging fiyat hareketlerini bastırıyor ve fiyatı "
-            : "— dealer hedging volatiliteyi amplify ediyor, "
-          }
-          <em>${fmt(callWall)}</em> call wall'una yakın tutuyor.
-        </p>
-      </div>
+    ctx.fillStyle = "#0c0c0d"; ctx.fillRect(0, 0, W, H);
 
-      <div className="hero-right">
-        {/* Regime panel */}
-        <div className="regime-panel">
-          <div className="regime-head">
-            <span className="regime-label">Gamma Rejimi</span>
-            <span className={`regime-state ${!isPositive ? "neg" : ""}`}>
-              {isPositive ? "● POZİTİF" : "● NEGATİF"}
-            </span>
-          </div>
-          <div className="regime-value">{fmtB(data.totals.gamma)}<span style={{ fontSize: 16, color: "var(--text-dim)", marginLeft: 4 }}>$</span></div>
-          <div className="gamma-scale">
-            <div className="gamma-pointer" style={{ left: `${gammaPct}%` }} />
-          </div>
-          <div className="gamma-scale-labels">
-            <span>−NEG</span><span>NÖTR</span><span>+POS</span>
-          </div>
-        </div>
+    // Grid
+    const step = Math.max(Math.round((hi - lo) / 18 / 1000) * 1000, 1000);
+    ctx.strokeStyle = "#1a1a1e"; ctx.lineWidth = 0.4;
+    ctx.fillStyle = "#4a4742"; ctx.font = "10px JetBrains Mono"; ctx.textAlign = "right";
+    for (let p = Math.ceil(lo / step) * step; p <= hi; p += step) {
+      const y = yS(p);
+      ctx.beginPath(); ctx.moveTo(pad.left, y); ctx.lineTo(W - gPad.right, y); ctx.stroke();
+      ctx.fillText((p / 1000).toFixed(0) + "K", pad.left - 5, y + 3);
+    }
 
-        {/* EM Band */}
-        <div className="regime-panel" style={{ padding: "14px 20px" }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 10 }}>
-            <span className="regime-label">Beklenen Hareket (EOW)</span>
-            {emRange > 0 && <span style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--text-dim)" }}>
-              ±{((emRange / 2 / data.spot) * 100).toFixed(1)}%
-            </span>}
-          </div>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
-            <span style={{ fontFamily: "var(--mono)", fontSize: 13, color: "var(--neg)" }}>${fmt(emLow)}</span>
-            <span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-dim)" }}>→ SPOT →</span>
-            <span style={{ fontFamily: "var(--mono)", fontSize: 13, color: "var(--pos)" }}>${fmt(emHigh)}</span>
-          </div>
-          <div className="gamma-scale" style={{ margin: "8px 0 4px", background: "linear-gradient(90deg, var(--neg) 0%, var(--text-mute) 50%, var(--pos) 100%)" }}>
-            <div className="gamma-pointer" style={{ left: `${Math.max(2, Math.min(98, spotPos))}%`, background: "var(--accent)" }} />
-          </div>
-        </div>
+    // Divider
+    ctx.strokeStyle = "#1e2025"; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(splitX, pad.top - 5); ctx.lineTo(splitX, H - pad.bottom + 5); ctx.stroke();
 
-        {/* Key levels list */}
-        <div className="levels-list">
-          {[
-            { label: "Call Wall", sub: "max call γ", val: callWall, pct: data.levels.callWallPct, color: "var(--pos)" },
-            { label: "Zero Gamma", sub: "rejim dönüşü", val: zeroGamma, pct: data.levels.zeroGammaPct, color: "var(--neutral)" },
-            { label: "Max Pain", sub: "yazarlar min", val: maxPain, pct: data.levels.maxPainPct, color: "var(--accent)" },
-            { label: "Put Wall", sub: "max put γ", val: putWall, pct: data.levels.putWallPct, color: "var(--neg)" },
-          ].map((item, i) => {
-            const pctNum = item.pct ? parseFloat(item.pct) : 0;
-            return (
-              <div key={i} className="level-row">
-                <div className="level-dot" style={{ color: item.color }} />
-                <div>
-                  <span className="level-name">{item.label}</span>
-                  <span className="level-sub">{item.sub}</span>
-                </div>
-                <div className="level-value">${fmt(item.val)}</div>
-                <div className={`level-delta ${pctNum >= 0 ? "pos" : "neg"}`}>
-                  {item.pct ? `${pctNum >= 0 ? "+" : ""}${item.pct}%` : "—"}
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      </div>
-    </section>
-  );
-}
+    // Level lines
+    const drawLvl = (price, color, label, dash) => {
+      if (!price) return;
+      const y = yS(price); if (y < pad.top - 8 || y > H - pad.bottom + 8) return;
+      ctx.save(); ctx.strokeStyle = color; ctx.lineWidth = 1;
+      ctx.setLineDash(dash || []); ctx.globalAlpha = 0.5;
+      ctx.beginPath(); ctx.moveTo(pad.left, y); ctx.lineTo(W - gPad.right, y); ctx.stroke();
+      ctx.restore();
+      const lx = W - gPad.right + 3, tw = gPad.right - 5;
+      ctx.fillStyle = "#0c0c0d"; ctx.fillRect(lx, y - 8, tw, 16);
+      ctx.strokeStyle = color; ctx.lineWidth = 1; ctx.strokeRect(lx, y - 8, tw, 16);
+      ctx.fillStyle = color; ctx.font = "bold 8px JetBrains Mono"; ctx.textAlign = "left";
+      ctx.fillText(`${label}: ${fmt(price)}`, lx + 2, y + 3);
+    };
 
-// ═══════════════════════════════════════════════════════════
-// STRIKE LADDER (Section i)
-// ═══════════════════════════════════════════════════════════
-function StrikeLadder({ data, expiry }) {
-  const { strikes, spot, levels } = data;
-  const lo = spot * 0.85, hi = spot * 1.15;
-  const vis = strikes.filter(s => s.strike >= lo && s.strike <= hi);
-  const activeExp = expiry === "all" ? ["0-7d", "8-45d", "45d+"] : [expiry];
+    if (spot) {
+      const sy = yS(spot);
+      if (sy >= pad.top && sy <= H - pad.bottom) {
+        ctx.save(); ctx.strokeStyle = "#FFD700"; ctx.lineWidth = 1.5; ctx.setLineDash([2,2]); ctx.globalAlpha = 0.7;
+        ctx.beginPath(); ctx.moveTo(pad.left, sy); ctx.lineTo(W - gPad.right, sy); ctx.stroke(); ctx.restore();
+        const lx = W - gPad.right + 3, tw = gPad.right - 5;
+        ctx.fillStyle = "#FFD700"; ctx.fillRect(lx, sy - 9, tw, 18);
+        ctx.fillStyle = "#000"; ctx.font = "bold 9px JetBrains Mono"; ctx.textAlign = "left";
+        ctx.fillText(`⚡ ${fmt(spot)}`, lx + 2, sy + 4);
+      }
+    }
+    drawLvl(levels.zeroGamma, "#06b6d4", "ZG", [6,3,2,3]);
+    drawLvl(levels.emHigh, "#818cf8", "EM↑", [4,2]);
+    drawLvl(levels.callWall, "#22c55e", "CW", [8,4]);
+    drawLvl(levels.maxPain, "#f97316", "MP", [4,4]);
+    drawLvl(levels.putWall, "#ef4444", "PW", [8,4]);
+    drawLvl(levels.emLow, "#818cf8", "EM↓", [4,2]);
 
-  const maxGex = Math.max(...vis.map(s => {
-    const cg = activeExp.reduce((a, ek) => a + (s.byExpiry[ek]?.callGex || 0), 0);
-    const pg = activeExp.reduce((a, ek) => a + Math.abs(s.byExpiry[ek]?.putGex || 0), 0);
-    return Math.max(cg, pg);
-  }), 1);
+    // Candles
+    const cArea = splitX - pad.left - 12;
+    if (ohlcv?.close?.length > 1) {
+      const n = ohlcv.close.length, cw = Math.max(Math.floor(cArea/n)-3,2), gap = cArea/n;
+      const volH = (H-pad.top-pad.bottom)*0.13, maxVol = Math.max(...ohlcv.volume,1);
+      for (let i = 0; i < n; i++) {
+        const x = pad.left + i*gap + gap/2, o=ohlcv.open[i], cl=ohlcv.close[i], h=ohlcv.high[i], l=ohlcv.low[i];
+        const bull = cl >= o, clr = bull ? "#22c55e" : "#ef4444";
+        ctx.strokeStyle = clr; ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.moveTo(x,yS(h)); ctx.lineTo(x,yS(l)); ctx.stroke();
+        ctx.fillStyle = clr; ctx.globalAlpha = 0.9;
+        ctx.fillRect(x-cw/2, Math.min(yS(o),yS(cl)), cw, Math.max(Math.abs(yS(o)-yS(cl)),1));
+        ctx.globalAlpha = 0.3;
+        ctx.fillRect(x-cw/2, H-pad.bottom-(ohlcv.volume[i]/maxVol)*volH, cw, (ohlcv.volume[i]/maxVol)*volH);
+        ctx.globalAlpha = 1;
+      }
+      // X axis labels
+      ctx.fillStyle = "#4a4742"; ctx.font = "9px JetBrains Mono"; ctx.textAlign = "center";
+      const lEvery = Math.max(Math.floor(n/6),1);
+      for (let i = 0; i < n; i += lEvery) {
+        const x = pad.left+i*gap+gap/2, dt = new Date(ohlcv.ticks[i]);
+        ctx.fillText(`${String(dt.getHours()).padStart(2,"0")}:00`, x, H-pad.bottom+14);
+        if (i === 0 || new Date(ohlcv.ticks[Math.max(0,i-lEvery)]).getDate() !== dt.getDate()) {
+          ctx.fillText(`${dt.getDate()} May`, x, H-pad.bottom+26);
+        }
+      }
+      // Subtitle
+      ctx.fillStyle = "#b8b5ac"; ctx.font = "bold 11px Manrope"; ctx.textAlign = "center";
+      ctx.fillText("BTC/USD — Mum Grafiği", pad.left+cArea/2, 26);
+    } else {
+      ctx.fillStyle = "#4a4742"; ctx.font = "11px Manrope"; ctx.textAlign = "center";
+      ctx.fillText("Mum verisi yükleniyor...", pad.left+cArea/2, H/2);
+    }
 
-  const wallTags = {
-    [levels.callWall]: { label: "CW", cls: "cw" },
-    [levels.putWall]: { label: "PW", cls: "pw" },
-    [levels.maxPain]: { label: "MP", cls: "mp" },
-    [levels.zeroGamma]: { label: "ZΓ", cls: "zg" },
+    // Info box
+    const totG = strikes.reduce((a,s)=>a+s.netGex,0);
+    const totC = strikes.reduce((a,s)=>a+s.charmNet,0);
+    ctx.fillStyle = "#0d1117cc"; ctx.fillRect(pad.left+5, pad.top+2, 300, 16);
+    ctx.fillStyle = "#4a4742"; ctx.font = "9px JetBrains Mono"; ctx.textAlign = "left";
+    ctx.fillText(`Gamma: ▲${fmtM(totG)}  Charm: ${fmtM(totC)}  |  ATM Skew: +0.0%`, pad.left+8, pad.top+12);
+
+    // GEX bars
+    const gL = splitX + gPad.left, gR = W - gPad.right, gW = gR - gL, gMid = gL + gW/2;
+    const vis = strikes.filter(s => s.strike >= lo && s.strike <= hi);
+    if (!vis.length) return;
+    const maxGex = Math.max(...vis.map(s => Math.abs(s.netGex)), 1);
+    const barH = Math.max(Math.floor((H-pad.top-pad.bottom)/vis.length)-1, 2);
+
+    // Center axis
+    ctx.strokeStyle = "#232328"; ctx.lineWidth = 0.5;
+    ctx.beginPath(); ctx.moveTo(gMid,pad.top); ctx.lineTo(gMid,H-pad.bottom); ctx.stroke();
+
+    // Expiry colors
+    const eColors = {
+      "0-7d":  { c:"#22c55e", p:"#ef4444" },
+      "8-45d": { c:"#6366f1", p:"#f97316" },
+      "45d+":  { c:"#475569", p:"#78716c" },
+    };
+    const activeExp = expiry === "all" ? ["0-7d","8-45d","45d+"] : [expiry];
+
+    for (const s of vis) {
+      const y = yS(s.strike);
+      let posOff = 0, negOff = 0;
+      for (const ek of activeExp) {
+        const be = s.byExpiry[ek]; if (!be) continue;
+        const clr = eColors[ek];
+        if (be.callGex > 0) {
+          const w = (be.callGex/maxGex)*(gW/2);
+          ctx.fillStyle = clr.c; ctx.globalAlpha = 0.85;
+          ctx.fillRect(gMid+posOff, y-barH/2, w, barH); posOff += w;
+        }
+        if (be.putGex < 0) {
+          const w = (Math.abs(be.putGex)/maxGex)*(gW/2);
+          ctx.fillStyle = clr.p; ctx.globalAlpha = 0.85;
+          ctx.fillRect(gMid-negOff-w, y-barH/2, w, barH); negOff += w;
+        }
+      }
+      ctx.globalAlpha = 1;
+      // Net GEX diamond
+      const nx = gMid + (s.netGex/maxGex)*(gW/2);
+      ctx.fillStyle = "#FFD700"; ctx.globalAlpha = 0.9;
+      ctx.beginPath(); ctx.moveTo(nx,y-3.5); ctx.lineTo(nx+3.5,y); ctx.lineTo(nx,y+3.5); ctx.lineTo(nx-3.5,y); ctx.closePath(); ctx.fill();
+      ctx.globalAlpha = 1;
+    }
+
+    // GEX title + legend
+    ctx.fillStyle = "#b8b5ac"; ctx.font = "bold 11px Manrope"; ctx.textAlign = "center";
+    ctx.fillText("GEX Profili", gMid, 26);
+
+    // X axis
+    const gexTicks = [-3,-1.5,0,1.5,3];
+    ctx.fillStyle = "#4a4742"; ctx.font = "9px JetBrains Mono"; ctx.textAlign = "center";
+    for (const v of gexTicks) {
+      const x = gMid + (v/3)*(gW/2);
+      ctx.beginPath(); ctx.moveTo(x,H-pad.bottom); ctx.lineTo(x,H-pad.bottom+4); ctx.stroke();
+      ctx.fillText(v===0?"0":`${v>0?"+":""}${v}B`, x, H-pad.bottom+16);
+    }
+    ctx.fillText("Net GEX (Milyar $)", gMid, H-pad.bottom+32);
+
+    // Legend
+    const ly = H - pad.bottom + 44;
+    const leg = [
+      [pad.left,      "#8b5cf6","BTC/USD"],
+      [pad.left+58,   "#78716c","Hacim"],
+      [pad.left+100,  eColors["45d+"].c,"Call 45g+"],
+      [pad.left+158,  eColors["45d+"].p,"Put 45g+"],
+      [pad.left+210,  eColors["8-45d"].c,"Call 8-45g"],
+      [pad.left+270,  eColors["8-45d"].p,"Put 8-45g"],
+      [pad.left+325,  eColors["0-7d"].c,"Call 0-7g"],
+      [pad.left+375,  eColors["0-7d"].p,"Put 0-7g"],
+      [pad.left+420,  "#888","— Net GEX"],
+      [pad.left+475,  "#06b6d4","OI Δ"],
+      [pad.left+505,  "#FFD700","◆ DA-GEX"],
+    ];
+    ctx.textAlign = "left";
+    for (const [x,c,t] of leg) {
+      ctx.fillStyle = c; ctx.fillRect(x, ly-5, 7, 7);
+      ctx.fillStyle = "#4a4742"; ctx.fillText(t, x+9, ly+2);
+    }
+
+    // Y label
+    ctx.save(); ctx.translate(16, H/2); ctx.rotate(-Math.PI/2);
+    ctx.fillStyle = "#4a4742"; ctx.textAlign = "center"; ctx.fillText("Fiyat ($)", 0, 0); ctx.restore();
+  }, [strikes, spot, levels, ohlcv, expiry]);
+
+  useEffect(() => { draw(); }, [draw]);
+  useEffect(() => {
+    const h = () => draw(); window.addEventListener("resize", h); return () => window.removeEventListener("resize", h);
+  }, [draw]);
+
+  const handleMouseMove = (e) => {
+    const canvas = canvasRef.current, ctr = ctrRef.current;
+    if (!canvas || !ctr || !strikes.length) return;
+    const rect = ctr.getBoundingClientRect();
+    const mouseY = e.clientY - rect.top;
+    const lo = spot * 0.82, hi = spot * 1.18;
+    const pad = { top: 48, bottom: 58 };
+    const price = hi - ((mouseY - pad.top) / (rect.height - pad.top - pad.bottom)) * (hi - lo);
+
+    let closest = null, minD = Infinity;
+    for (const s of strikes) {
+      const d = Math.abs(s.strike - price);
+      if (d < minD) { minD = d; closest = s; }
+    }
+    if (closest && minD < (hi - lo) * 0.025) {
+      setTooltip(closest);
+      setTooltipPos({ x: e.clientX, y: e.clientY });
+    } else {
+      setTooltip(null);
+    }
   };
 
   return (
-    <div className="ladder">
-      <div className="ladder-header">
-        <div>TAG</div>
-        <div style={{ textAlign: "right" }}>DIST</div>
-        <div style={{ textAlign: "right", paddingRight: 14 }}>PUT γ</div>
-        <div style={{ textAlign: "center" }}>STRIKE</div>
-        <div style={{ paddingLeft: 14 }}>CALL γ</div>
-        <div style={{ textAlign: "center" }}>NET</div>
-        <div>OI</div>
-      </div>
-      {vis.slice().reverse().map(s => {
-        const tag = wallTags[s.strike];
-        const dist = ((s.strike - spot) / spot * 100).toFixed(1);
-        const distPos = parseFloat(dist) >= 0;
-        const isSpot = Math.abs(s.strike - spot) < 500;
-
-        const callW = activeExp.reduce((a, ek) => a + (s.byExpiry[ek]?.callGex || 0), 0);
-        const putW = activeExp.reduce((a, ek) => a + Math.abs(s.byExpiry[ek]?.putGex || 0), 0);
-        const callBarW = Math.round((callW / maxGex) * 100);
-        const putBarW = Math.round((putW / maxGex) * 100);
-
-        return (
-          <div key={s.strike} className={`ladder-row ${isSpot ? "spot" : ""}`}>
-            <div className={`tag ${tag?.cls || ""}`}>{tag?.label || ""}</div>
-            <div className={`dist ${distPos ? "pos" : "neg"}`}>{distPos ? "+" : ""}{dist}%</div>
-            <div className="bar-cell put">
-              {putW > 0 && <div className="bar put" style={{ width: `${putBarW}%` }} />}
+    <div ref={ctrRef} style={{ position: "relative", width: "100%", height: "calc(100vh - 280px)", minHeight: 420 }}
+      onMouseMove={handleMouseMove} onMouseLeave={() => setTooltip(null)}>
+      <canvas ref={canvasRef} style={{ width: "100%", height: "100%", display: "block" }} />
+      {tooltip && (
+        <div className="gex-tooltip" style={{ left: Math.min(tooltipPos.x + 16, window.innerWidth - 230), top: Math.max(tooltipPos.y - 20, 10) }}>
+          <div className="tt-head">Strike: ${fmt(tooltip.strike)}</div>
+          <div className="tt-row"><span>Net GEX</span><span className="tt-val" style={{ color: tooltip.netGex >= 0 ? "var(--call)" : "var(--put)" }}>{tooltip.netGex >= 0 ? "+" : ""}${fmtM(tooltip.netGex)}</span></div>
+          <div className="tt-row"><span>Call GEX</span><span className="tt-val" style={{ color: "var(--call)" }}>${fmtM(tooltip.callGexDollar)}</span></div>
+          <div className="tt-row"><span>Put GEX</span><span className="tt-val" style={{ color: "var(--put)" }}>${fmtM(tooltip.putGexDollar)}</span></div>
+          <div style={{ borderTop: "1px solid var(--hairline)", margin: "6px 0" }} />
+          <div className="tt-row"><span>Call OI</span><span className="tt-val">{tooltip.callOI.toFixed(1)} BTC</span></div>
+          <div className="tt-row"><span>Put OI</span><span className="tt-val">{tooltip.putOI.toFixed(1)} BTC</span></div>
+          <div className="tt-row"><span>Toplam OI</span><span className="tt-val">{tooltip.totalOI.toFixed(1)} BTC</span></div>
+          {tooltip.details?.slice(0,3).map((d,i) => (
+            <div key={i} style={{ color: d.type==="call"?"var(--call)":"var(--put)", fontSize:"var(--font-xs)", lineHeight:"14px", marginTop: i===0?6:2 }}>
+              {d.type.toUpperCase()} {d.expiry} ({d.daysToExp}g) OI:{d.oi.toFixed(0)} IV:{(d.iv*100).toFixed(0)}%
             </div>
-            <div className="strike-cell">{(s.strike / 1000).toFixed(0)}K</div>
-            <div className="bar-cell call">
-              {callW > 0 && <div className="bar call" style={{ width: `${callBarW}%` }} />}
-            </div>
-            <div className="net" style={{ color: s.netGex >= 0 ? "var(--pos)" : "var(--neg)", fontSize: 10 }}>
-              {s.netGex >= 0 ? "+" : ""}{fmtB(s.netGex)}
-            </div>
-            <div style={{ fontSize: 10, color: "var(--text-mute)", textAlign: "right" }}>
-              {(s.totalOI / 1000).toFixed(0)}K
-            </div>
-          </div>
-        );
-      })}
+          ))}
+        </div>
+      )}
     </div>
   );
 }
 
-// ═══════════════════════════════════════════════════════════
-// SHEET (right column in Section i)
-// ═══════════════════════════════════════════════════════════
-function Sheet({ data }) {
-  const { totals, levels, stats } = data;
+// ─── Quantum Walls SVG Chart ──────────────────────────────
+function QuantumChart({ classified, spot, levels }) {
+  const [tip, setTip] = useState(null);
+  const [tipPos, setTipPos] = useState({ x: 0, y: 0 });
+  const containerRef = useRef(null);
+
+  const W = 1400, H = 680;
+  const pad = { top: 44, right: 56, bottom: 50, left: 108 };
+  const cW = W - pad.left - pad.right;
+  const cH = H - pad.top - pad.bottom;
+  const lo = spot * 0.80, hi = spot * 1.20;
+  const yS = (p) => pad.top + ((hi - p) / (hi - lo)) * cH;
+
+  const vis = classified.filter(s => s.strike >= lo && s.strike <= hi);
+  if (!vis.length) return null;
+  const maxBar = Math.max(...vis.map(s => Math.max(s.callGex, Math.abs(s.putGex))), 1);
+  const rowH = Math.max(cH / vis.length - 1, 2.5);
+  const xBar = (mag) => (mag / maxBar) * cW * 0.88;
+
+  const wallColors = { callWall: "#ff2d7b", putWall: "#00e5cc", magnet: "#a855f7", neutral: "#334155" };
+
+  const handleMouse = (e) => {
+    const rect = containerRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const sy = (e.clientY - rect.top) / rect.height * H;
+    const price = hi - ((sy - pad.top) / cH) * (hi - lo);
+    let best = null, bestD = Infinity;
+    for (const s of vis) { const d = Math.abs(s.strike - price); if (d < bestD) { bestD = d; best = s; } }
+    if (best && bestD < (hi - lo) * 0.02) { setTip(best); setTipPos({ x: e.clientX, y: e.clientY }); }
+    else setTip(null);
+  };
+
+  // Top walls for sidebar
+  const topWalls = [...vis].filter(s => s.isMajor).sort((a, b) => Math.abs(b.netGex) - Math.abs(a.netGex)).slice(0, 8);
+
   return (
-    <div className="sheet">
-      <div className="sheet-block">
-        <div className="sheet-label">Net GEX Toplam</div>
-        <div className={`sheet-num ${totals.gamma >= 0 ? "pos" : "neg"}`}>{fmtB(totals.gamma)}<span style={{ fontSize: 20 }}>$</span></div>
-        <div className="sheet-foot">
-          <span>{totals.gamma >= 0 ? "Pozitif gamma rejimi" : "Negatif gamma rejimi"}</span>
-          <span>{stats.rows} opsiyon</span>
+    <div className="quantum-wrap">
+      <div className="quantum-header">
+        <div>
+          <div style={{ fontFamily:"var(--serif)", fontStyle:"italic", fontSize: 18, color:"var(--text)" }}>ii. Quantum Walls</div>
+          <div style={{ fontFamily:"var(--mono)", fontSize:"var(--font-xs)", color:"var(--text-mute)", marginTop: 2 }}>
+            |GAMMA EXPOSURE| · USD &nbsp;&nbsp;·&nbsp;&nbsp; {vis.filter(s=>s.wallType==="callWall").length} CALL WALLS · {vis.filter(s=>s.wallType==="putWall").length} PUT WALLS · {vis.filter(s=>s.wallType==="magnet").length} MAGNETS
+          </div>
+        </div>
+        <span style={{ fontFamily:"var(--mono)", fontSize:"var(--font-xs)", color:"var(--text-mute)" }}>
+          {vis.length} STRIKE · ±20% SPOT
+        </span>
+      </div>
+
+      <div className="quantum-legend" style={{ marginBottom: 8 }}>
+        {[["#ff2d7b","⚡ CALL WALL"],["#00e5cc","◎ PUT WALL"],["#a855f7","🧲 MAGNET"]].map(([c,l],i) => (
+          <span key={i} className="q-leg">
+            <span className="q-swatch" style={{ background: c, opacity: 0.85 }} />
+            <span style={{ color: c, fontFamily:"var(--mono)", fontSize:"var(--font-xs)" }}>{l}</span>
+          </span>
+        ))}
+      </div>
+
+      <div className="quantum-body">
+        {/* SVG Chart */}
+        <div ref={containerRef} style={{ position:"relative" }} onMouseMove={handleMouse} onMouseLeave={() => setTip(null)}>
+          <svg viewBox={`0 0 ${W} ${H}`} style={{ width:"100%", height:"auto", display:"block" }}>
+            <defs>
+              <linearGradient id="cBar" x1="0" x2="1"><stop offset="0%" stopColor="#ff2d7b" stopOpacity="0.9"/><stop offset="100%" stopColor="#ff2d7b" stopOpacity="0.25"/></linearGradient>
+              <linearGradient id="pBar" x1="0" x2="1"><stop offset="0%" stopColor="#00e5cc" stopOpacity="0.85"/><stop offset="100%" stopColor="#00e5cc" stopOpacity="0.2"/></linearGradient>
+              <linearGradient id="mBar" x1="0" x2="1"><stop offset="0%" stopColor="#a855f7" stopOpacity="0.5"/><stop offset="100%" stopColor="#a855f7" stopOpacity="0.08"/></linearGradient>
+            </defs>
+
+            {/* Grid */}
+            {[...Array(Math.ceil((hi-lo)/1000)+1)].map((_,i) => {
+              const p = Math.ceil(lo/1000)*1000 + i*1000;
+              if (p > hi) return null;
+              const y = yS(p);
+              return <g key={p}>
+                <line x1={pad.left} x2={W-pad.right} y1={y} y2={y} stroke="#1a1a1e" strokeWidth="0.4"/>
+                <text x={pad.left-6} y={y+3} textAnchor="end" fontFamily="JetBrains Mono" fontSize="10" fill="#4a4742">{(p/1000).toFixed(0)}K</text>
+              </g>;
+            })}
+
+            {/* Bars */}
+            {vis.map(s => {
+              const y = yS(s.strike);
+              const callW = xBar(s.callGex), putW = xBar(Math.abs(s.putGex));
+              const totalW = Math.max(callW, putW);
+              return (
+                <g key={s.strike}>
+                  {s.wallType==="magnet" && s.isSignificant && <rect x={pad.left} y={y-rowH/2} width={totalW} height={rowH} fill="url(#mBar)"/>}
+                  {s.callGex > 0 && <rect x={pad.left} y={y-rowH/2} width={callW} height={rowH} fill="url(#cBar)"/>}
+                  {s.putGex < 0 && <rect x={pad.left} y={y-rowH/2} width={putW} height={rowH} fill="url(#pBar)" opacity="0.85"/>}
+
+                  {/* Wall label */}
+                  {s.isMajor && rowH >= 3 && totalW > 160 && (() => {
+                    const lClr = wallColors[s.wallType];
+                    const lType = s.wallType==="callWall"?"CALL WALL":s.wallType==="putWall"?"PUT WALL":s.wallType==="magnet"?"MAGNET":null;
+                    if (!lType) return null;
+                    const gexV = fmtM(Math.abs(s.netGex));
+                    const txt = `--- ${s.wallType==="callWall"?"⚡":s.wallType==="putWall"?"◎":"🧲"} ${lType}  ${gexV}  [${s.oiPct}%|${s.gexPct}%]`;
+                    const tx = pad.left + totalW / 2;
+                    return (
+                      <g>
+                        <line x1={pad.left+totalW+4} x2={W-pad.right} y1={y} y2={y} stroke={lClr} strokeWidth="0.8" strokeDasharray="4 3" opacity="0.35"/>
+                        <text x={tx} y={y+3.5} textAnchor="middle" fontFamily="JetBrains Mono" fontSize="9" fontWeight="600" fill={lClr}>{txt}</text>
+                      </g>
+                    );
+                  })()}
+                </g>
+              );
+            })}
+
+            {/* Level badges */}
+            {[
+              { price: levels.callWall, label: "CW", color: "#22c55e" },
+              { price: levels.emHigh, label: "EM↑", color: "#818cf8" },
+              { price: levels.zeroGamma, label: "ZΓ", color: "#06b6d4" },
+              { price: levels.maxPain, label: "MP", color: "#f97316" },
+              { price: levels.emLow, label: "EM↓", color: "#818cf8" },
+              { price: levels.putWall, label: "PW", color: "#ef4444" },
+            ].filter(x => x.price).map((it, i) => {
+              const y = yS(it.price);
+              if (y < pad.top - 10 || y > H - pad.bottom + 10) return null;
+              return <g key={i}>
+                <line x1={pad.left} x2={W-pad.right} y1={y} y2={y} stroke={it.color} strokeWidth="0.7" strokeDasharray="3 5" opacity="0.28"/>
+                <rect x={pad.left-56} y={y-9} width="48" height="18" rx="3" fill="var(--surface-2)" stroke={it.color} strokeWidth="1"/>
+                <text x={pad.left-32} y={y+4} textAnchor="middle" fontFamily="JetBrains Mono" fontSize="9" fontWeight="700" fill={it.color}>{it.label}</text>
+              </g>;
+            })}
+
+            {/* Spot */}
+            {(() => {
+              const y = yS(spot);
+              return <g>
+                <line x1={pad.left} x2={W-pad.right} y1={y} y2={y} stroke="#FFD700" strokeWidth="1.6" opacity="0.85"/>
+                <rect x={pad.left-56} y={y-10} width="48" height="20" rx="3" fill="#FFD700"/>
+                <text x={pad.left-32} y={y+5} textAnchor="middle" fontFamily="JetBrains Mono" fontSize="10" fontWeight="700" fill="#000">SPOT</text>
+              </g>;
+            })()}
+
+            {/* X axis */}
+            <line x1={pad.left} x2={W-pad.right} y1={H-pad.bottom} y2={H-pad.bottom} stroke="#1e2025"/>
+            {[0,0.25,0.5,0.75,1].map(p => {
+              const x = pad.left + p * cW * 0.88, v = p * maxBar;
+              return <g key={p}>
+                <line x1={x} x2={x} y1={H-pad.bottom} y2={H-pad.bottom+4} stroke="#1e2025"/>
+                <text x={x} y={H-pad.bottom+16} textAnchor="middle" fontFamily="JetBrains Mono" fontSize="9" fill="#4a4742">${fmtM(v)}</text>
+              </g>;
+            })}
+            <text x={(pad.left + W-pad.right)/2} y={H-pad.bottom+34} textAnchor="middle" fontFamily="JetBrains Mono" fontSize="9" fill="#4a4742">|Gamma Exposure| · $</text>
+            <text transform={`translate(18,${H/2}) rotate(-90)`} textAnchor="middle" fontFamily="JetBrains Mono" fontSize="9" fill="#4a4742">STRIKE ($)</text>
+          </svg>
+
+          {tip && (
+            <div className="gex-tooltip" style={{ left: Math.min(tipPos.x+16, window.innerWidth-230), top: Math.max(tipPos.y-20,10) }}>
+              <div className="tt-head">Strike: ${fmt(tip.strike)}</div>
+              <div className="tt-row"><span>Net GEX</span><span className="tt-val" style={{color:tip.netGex>=0?"var(--call)":"var(--put)"}}>{fmtM(tip.netGex)}$</span></div>
+              <div className="tt-row"><span>Call GEX</span><span className="tt-val" style={{color:"var(--call)"}}>${fmtM(tip.callGexDollar)}</span></div>
+              <div className="tt-row"><span>Put GEX</span><span className="tt-val" style={{color:"var(--put)"}}>${fmtM(tip.putGexDollar)}</span></div>
+              <div style={{borderTop:"1px solid var(--hairline)",margin:"5px 0"}}/>
+              <div className="tt-row"><span>Call OI</span><span className="tt-val">{tip.callOI.toFixed(1)} BTC</span></div>
+              <div className="tt-row"><span>Put OI</span><span className="tt-val">{tip.putOI.toFixed(1)} BTC</span></div>
+              <div className="tt-row"><span>OI %</span><span className="tt-val">{tip.oiPct}%</span></div>
+            </div>
+          )}
+        </div>
+
+        {/* Top Walls List */}
+        <div>
+          <div style={{ fontFamily:"var(--mono)", fontSize:"var(--font-xs)", color:"var(--text-mute)", letterSpacing:"0.12em", textTransform:"uppercase", marginBottom: 10 }}>
+            TOP WALLS — RANKED ↓
+          </div>
+          <div className="wall-list">
+            {topWalls.map((w, i) => {
+              const isCall = w.wallType === "callWall";
+              const isPut = w.wallType === "putWall";
+              const color = isCall ? "#ff2d7b" : isPut ? "#00e5cc" : "#a855f7";
+              const pct = ((w.strike - spot) / spot * 100);
+              return (
+                <div key={w.strike} className="wall-item">
+                  <span className="wall-rank">{String(i+1).padStart(2,"0")}</span>
+                  <div className="wall-info">
+                    <span className="wall-price" style={{ color }}>${fmt(w.strike)}</span>
+                    <span className="wall-type-tag" style={{ color }}>
+                      {isCall ? "Call" : isPut ? "Put" : "Magnet"} · OI {w.oiPct}%
+                    </span>
+                  </div>
+                  <span className="wall-gex" style={{ color: pct >= 0 ? "var(--pos)" : "var(--neg)" }}>
+                    {pct >= 0 ? "+" : ""}{pct.toFixed(1)}%<br/>
+                    <span style={{ color:"var(--text-mute)" }}>{fmtM(w.netGex)}$</span>
+                  </span>
+                </div>
+              );
+            })}
+          </div>
         </div>
       </div>
-      <div className="sheet-block">
-        <div className="sheet-label">Vanna Exposure</div>
-        <div className="sheet-num">{fmtB(totals.vanna)}<span style={{ fontSize: 20 }}>$</span></div>
-        <div className="sheet-foot"><span>∂Δ/∂σ · IV etkisi</span></div>
+    </div>
+  );
+}
+
+// ─── Hero ─────────────────────────────────────────────────
+function Hero({ spot, change24h, totals, levels, dvol }) {
+  const animSpot = useCountUp(spot);
+  const animChg = useCountUp(change24h);
+  const isPos = totals.gamma >= 0;
+  const gammaPct = Math.max(0, Math.min(100, ((totals.gamma + 50e6) / 250e6) * 100));
+  const emRange = (levels.emHigh || 0) - (levels.emLow || 0);
+  const spotPos = emRange > 0 ? ((spot - (levels.emLow || 0)) / emRange) * 100 : 50;
+
+  return (
+    <div className="hero">
+      <div className="hero-price-block">
+        <div className="hero-kicker mono">BTC/USD · Deribit Index · Spot</div>
+        <div className="hero-price tabular">
+          <span>{Math.floor(animSpot).toLocaleString("en-US")}</span>
+          <span className="currency">USD</span>
+        </div>
+        <div className="hero-meta">
+          <span className={`change-pill ${animChg >= 0 ? "up" : "dn"}`}>
+            {animChg >= 0 ? "+" : ""}{animChg.toFixed(2)}% <span style={{ color:"var(--text-mute)", marginLeft:4 }}>24h</span>
+          </span>
+          <span style={{ fontFamily:"var(--mono)", fontSize:"var(--font-xs)", color:"var(--text-dim)" }}>
+            ATM IV: <b style={{ color:"var(--text)" }}>{dvol.toFixed(1)}%</b>
+          </span>
+        </div>
       </div>
-      <div className="sheet-block">
-        <div className="sheet-label">Charm Exposure</div>
-        <div className="sheet-num">{fmtB(totals.charm)}<span style={{ fontSize: 20 }}>$</span></div>
-        <div className="sheet-foot"><span>∂Δ/∂t · zaman çürümesi</span></div>
+
+      <div className="hero-regime">
+        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"baseline" }}>
+          <span className="regime-label">Gamma Rejimi</span>
+          <span className="regime-state" style={{ color: isPos ? "var(--pos)" : "var(--neg)" }}>
+            {isPos ? "● POZİTİF" : "● NEGATİF"}
+          </span>
+        </div>
+        <div className="regime-val">{fmtM(totals.gamma)}<span style={{fontSize:16,color:"var(--text-dim)",marginLeft:4}}>$</span></div>
+        <div className="gamma-bar"><div className="gamma-ptr" style={{ left: `${gammaPct}%` }}/></div>
+        <div style={{ display:"flex", justifyContent:"space-between", fontFamily:"var(--mono)", fontSize:"var(--font-xs)", color:"var(--text-mute)" }}>
+          <span>− NEG</span><span>NÖTR</span><span>+ POS</span>
+        </div>
+        <div style={{ marginTop: 8, fontFamily:"var(--mono)", fontSize:"var(--font-xs)", color:"var(--text-dim)", display:"grid", gridTemplateColumns:"1fr 1fr", gap:"2px 12px" }}>
+          <span>Vanna</span><span style={{color:"var(--text)"}}>{fmtM(totals.vanna)}$</span>
+          <span>Charm</span><span style={{color:"var(--text)"}}>{fmtM(totals.charm)}$</span>
+        </div>
       </div>
-      <div className="sheet-block">
-        <div className="sheet-label">Kilit Seviyeler</div>
-        <div className="levels-list">
-          {[
-            { label: "Call Wall", val: levels.callWall, color: "var(--pos)" },
-            { label: "Zero Gamma", val: levels.zeroGamma, color: "var(--neutral)" },
-            { label: "Max Pain", val: levels.maxPain, color: "var(--accent)" },
-            { label: "Put Wall", val: levels.putWall, color: "var(--neg)" },
-          ].map((r, i) => (
-            <div key={i} className="level-row" style={{ padding: "10px 0" }}>
-              <div className="level-dot" style={{ color: r.color }} />
-              <div className="level-name" style={{ fontSize: 12 }}>{r.label}</div>
-              <div className="level-value" style={{ fontSize: 13 }}>${fmt(r.val)}</div>
-              <div className="level-delta" style={{ fontSize: 10 }}>
-                {r.val && data.spot ? `${((r.val - data.spot) / data.spot * 100).toFixed(1)}%` : ""}
-              </div>
+
+      <div className="hero-em">
+        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"baseline" }}>
+          <span className="regime-label">Beklenen Hareket (EOW)</span>
+          {emRange > 0 && <span style={{ fontFamily:"var(--mono)", fontSize:"var(--font-xs)", color:"var(--text-dim)" }}>±{((emRange/2/spot)*100).toFixed(1)}%</span>}
+        </div>
+        <div className="em-row" style={{ marginTop: 4 }}>
+          <span style={{ color:"var(--put)", fontFamily:"var(--mono)", fontSize: 13 }}>${fmt(levels.emLow)}</span>
+          <span style={{ color:"var(--text-mute)", fontSize:"var(--font-xs)" }}>→ SPOT →</span>
+          <span style={{ color:"var(--call)", fontFamily:"var(--mono)", fontSize: 13 }}>${fmt(levels.emHigh)}</span>
+        </div>
+        <div className="gamma-bar" style={{ margin:"8px 0 4px", background:"linear-gradient(90deg,var(--neg) 0%,var(--neutral) 50%,var(--pos) 100%)" }}>
+          <div className="gamma-ptr" style={{ left:`${Math.max(2,Math.min(98,spotPos))}%`, background:"var(--spot)" }}/>
+        </div>
+        <div style={{ fontFamily:"var(--mono)", fontSize:"var(--font-xs)", color:"var(--text-mute)", display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:"4px" }}>
+          {[["Zero Gamma",levels.zeroGamma,"var(--zero-gamma)"],["Max Pain",levels.maxPain,"var(--max-pain)"],["Call Wall",levels.callWall,"var(--call)"]].map(([l,v,c],i) => (
+            <div key={i}>
+              <div style={{color:c, fontSize:"var(--font-xs)"}}>{l}</div>
+              <div style={{color:"var(--text)",fontWeight:500,fontFamily:"var(--mono)"}}>${fmt(v)}</div>
             </div>
           ))}
         </div>
@@ -445,271 +662,130 @@ function Sheet({ data }) {
   );
 }
 
-// ═══════════════════════════════════════════════════════════
-// GREEKS STACK (Section ii)
-// ═══════════════════════════════════════════════════════════
-function GreeksStack({ data }) {
-  const cells = [
-    {
-      glyph: "Γ", label: "GAMMA", num: fmtB(data.totals.gamma) + "$",
-      foot: `Dealer net gamma. ${data.totals.gamma >= 0 ? "Pozitif rejim: hedging dampens moves." : "Negatif rejim: hedging amplifies moves."}`,
-    },
-    {
-      glyph: "V", label: "VANNA", num: fmtB(data.totals.vanna) + "$",
-      foot: "∂Δ/∂σ — IV yükselince delta akışı. Vol spike → mevcut pozisyonlarda delta rebalancing.",
-    },
-    {
-      glyph: "C", label: "CHARM", num: fmtB(data.totals.charm) + "$",
-      foot: "∂Δ/∂t — Zaman geçtikçe delta değişimi. Expiry yaklaştıkça pin etkisi güçlenir.",
-    },
-  ];
-  return (
-    <div className="greeks-stack">
-      {cells.map((c, i) => (
-        <div key={i} className="greek-cell">
-          <div className="greek-glyph">{c.glyph}</div>
-          <div className="greek-label">{c.label}</div>
-          <div className="greek-num">{c.num}</div>
-          <div className="greek-foot">{c.foot}</div>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-// ═══════════════════════════════════════════════════════════
-// TERM STRUCTURE (Section iii)
-// ═══════════════════════════════════════════════════════════
-function TermCurve({ data }) {
-  const expiryMap = {};
-  for (const o of data.options) {
-    if (!expiryMap[o.expiryTs]) expiryMap[o.expiryTs] = { days: o.daysToExp, ivs: [], gex: 0 };
-    expiryMap[o.expiryTs].ivs.push({ strike: o.strike, iv: o.iv, dist: Math.abs(o.strike - data.spot) });
-    expiryMap[o.expiryTs].gex += o.gex;
-  }
-  const points = Object.values(expiryMap).map(e => {
-    e.ivs.sort((a, b) => a.dist - b.dist);
-    return { days: e.days, iv: e.ivs[0].iv * 100, gex: e.gex };
-  }).sort((a, b) => a.days - b.days);
-
-  if (points.length < 2) return null;
-
-  const W = 700, H = 260;
-  const pad = { top: 30, right: 20, bottom: 50, left: 50 };
-  const maxD = Math.max(...points.map(p => p.days));
-  const minIV = Math.min(...points.map(p => p.iv)) - 4;
-  const maxIV = Math.max(...points.map(p => p.iv)) + 4;
-  const maxGex = Math.max(...points.map(p => Math.abs(p.gex)), 1);
-  const xS = (d) => pad.left + (d / maxD) * (W - pad.left - pad.right);
-  const yS = (iv) => pad.top + ((maxIV - iv) / (maxIV - minIV)) * (H - pad.top - pad.bottom);
-  const pathD = points.map((p, i) => `${i === 0 ? "M" : "L"} ${xS(p.days)} ${yS(p.iv)}`).join(" ");
-
-  return (
-    <svg viewBox={`0 0 ${W} ${H}`} style={{ width: "100%", height: "auto", display: "block" }} className="term-svg">
-      {[40, 50, 60, 70, 80].map(iv => {
-        const y = yS(iv); if (y < pad.top || y > H - pad.bottom) return null;
-        return (
-          <g key={iv}>
-            <line x1={pad.left} x2={W - pad.right} y1={y} y2={y} stroke="var(--hairline)" strokeWidth="0.5" />
-            <text x={pad.left - 6} y={y + 3} textAnchor="end" fontSize="9" fontFamily="var(--mono)" fill="var(--text-mute)">{iv}%</text>
-          </g>
-        );
-      })}
-      {points.map((p, i) => {
-        const x = xS(p.days), bW = Math.max((W - pad.left - pad.right) / points.length * 0.5, 4);
-        const bH = Math.abs(p.gex) / maxGex * 60;
-        return <rect key={i} x={x - bW/2} y={H - pad.bottom - bH} width={bW} height={bH}
-          fill={p.gex >= 0 ? "var(--pos)" : "var(--neg)"} opacity="0.3" />;
-      })}
-      <path d={`${pathD} L ${xS(points[points.length-1].days)} ${H - pad.bottom} L ${pad.left} ${H - pad.bottom} Z`}
-        fill="var(--accent)" opacity="0.06" />
-      <path d={pathD} fill="none" stroke="var(--accent)" strokeWidth="1.8" />
-      {points.map((p, i) => (
-        <g key={i}>
-          <circle cx={xS(p.days)} cy={yS(p.iv)} r="4" fill="var(--bg)" stroke="var(--accent)" strokeWidth="1.5" />
-          <text x={xS(p.days)} y={yS(p.iv) - 8} textAnchor="middle" fontSize="9" fontFamily="var(--mono)" fill="var(--text-dim)">
-            {p.iv.toFixed(0)}%
-          </text>
-          <text x={xS(p.days)} y={H - pad.bottom + 16} textAnchor="middle" fontSize="9" fontFamily="var(--mono)" fill="var(--text-mute)">
-            {p.days}g
-          </text>
-        </g>
-      ))}
-      <text x={W/2} y={H - 8} textAnchor="middle" fontSize="9" fontFamily="var(--mono)" fill="var(--text-mute)">Vadeye Kalan Gün</text>
-    </svg>
-  );
-}
-
-// ═══════════════════════════════════════════════════════════
-// LOADING
-// ═══════════════════════════════════════════════════════════
-function Loading({ progress }) {
-  return (
-    <div style={{ display: "grid", placeItems: "center", height: "100vh", color: "var(--text-dim)", fontFamily: "var(--mono)", fontSize: 11, letterSpacing: "0.1em", background: "var(--bg)" }}>
-      <div style={{ textAlign: "center" }}>
-        <div style={{ width: 36, height: 36, margin: "0 auto 20px", border: "1.5px solid var(--hairline-strong)", borderTopColor: "var(--accent)", borderRadius: "50%", animation: "spin 0.9s linear infinite" }} />
-        <div>{progress || "LOADING OPTION CHAIN…"}</div>
-        <div style={{ marginTop: 8, fontSize: 10, color: "var(--text-mute)" }}>Tüm opsiyonlar çekildiği için 1-2 dk sürebilir</div>
-      </div>
-    </div>
-  );
-}
-
-// ═══════════════════════════════════════════════════════════
-// MAIN PAGE
-// ═══════════════════════════════════════════════════════════
+// ─── Main Page ────────────────────────────────────────────
 export default function Home() {
-  const data = useGexData();
+  const { size: fontSize, setSize: setFontSize } = useContext(FontCtx);
+  const { allOptions, spot, ohlcv, stats, change24h, dvol, loading, error, progress, lastUpdate, reload } = useGexData();
   const [expiry, setExpiry] = useState("all");
+  const [tab, setTab] = useState("gex");
 
-  if (data.loading) return (
-    <>
-      <Head><title>Options Desk · BTC</title></Head>
-      <Loading progress={data.progress} />
-    </>
-  );
+  // Recompute when expiry filter changes
+  const strikes = aggregateByStrike(allOptions, expiry);
+  const levels = findLevels(strikes, spot, allOptions, allOptions);
+  const classified = classifyStrikes(strikes, spot);
+  const totals = {
+    gamma: strikes.reduce((a, x) => a + x.netGex, 0),
+    vanna: strikes.reduce((a, x) => a + x.vannaNet, 0),
+    charm: strikes.reduce((a, x) => a + x.charmNet, 0),
+  };
 
-  if (data.error) return (
-    <>
-      <Head><title>Options Desk · BTC</title></Head>
-      <div style={{ display: "grid", placeItems: "center", height: "100vh", fontFamily: "var(--mono)", background: "var(--bg)", color: "var(--neg)" }}>
-        <div style={{ textAlign: "center" }}>
-          <div style={{ fontSize: 16, marginBottom: 12 }}>❌ {data.error}</div>
-          <button onClick={data.reload} style={{ background: "var(--surface)", color: "var(--text)", border: "1px solid var(--hairline-strong)", padding: "8px 20px", cursor: "pointer", fontFamily: "var(--mono)" }}>
-            Tekrar Dene
-          </button>
-        </div>
+  const isPos = totals.gamma >= 0;
+  const timeStr = lastUpdate ? lastUpdate.toLocaleTimeString("tr-TR", { hour:"2-digit", minute:"2-digit", second:"2-digit" }) : "—";
+
+  if (loading) return (
+    <div className="loading-wrap">
+      <div style={{ textAlign:"center", fontFamily:"var(--mono)", fontSize:"var(--font-xs)", color:"var(--text-mute)", letterSpacing:"0.1em" }}>
+        <div className="spin"/>
+        <div>{progress || "OPSİYON ZİNCİRİ YÜKLENİYOR..."}</div>
+        <div style={{ marginTop:8, color:"var(--text-mute)", fontSize:"var(--font-xs)" }}>Tüm opsiyonlar çekildiği için 1-2 dk sürebilir</div>
       </div>
-    </>
+    </div>
   );
 
-  const isPositive = data.totals.gamma >= 0;
-  const timeStr = data.lastUpdate
-    ? data.lastUpdate.toLocaleTimeString("tr-TR", { hour: "2-digit", minute: "2-digit", second: "2-digit" })
-    : "—";
+  if (error) return (
+    <div className="loading-wrap">
+      <div style={{ textAlign:"center" }}>
+        <div style={{ color:"var(--neg)", marginBottom:12 }}>❌ {error}</div>
+        <button className="h-btn" onClick={reload}>Tekrar Dene</button>
+      </div>
+    </div>
+  );
 
   return (
-    <>
-      <Head>
-        <title>Options Desk · BTC</title>
-        <meta name="viewport" content="width=device-width, initial-scale=1" />
-        <link rel="preconnect" href="https://fonts.googleapis.com" />
-        <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
-        <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Manrope:wght@200;300;400;500;600;700;800&family=JetBrains+Mono:wght@300;400;500;600&display=swap" rel="stylesheet" />
-      </Head>
+    <div className="app">
+      <Sidebar spot={spot} levels={levels} totals={totals} stats={stats} dvol={dvol} change24h={change24h} expiry={expiry} setExpiry={setExpiry} />
 
-      <div className="app">
-        <Sidebar data={data} expiry={expiry} setExpiry={setExpiry} />
-
-        <main className="main">
-          {/* Header */}
-          <div className="header">
-            <div className="header-trail">
-              <span className="crumb">Desk</span>
-              <span className="sep">/</span>
-              <span className="crumb">Crypto Options</span>
-              <span className="sep">/</span>
-              <span className="crumb active">BTC · Gamma</span>
-            </div>
-            <div className="header-actions">
-              <div className="h-stat">
-                <span className="h-stat-label">Güncellendi</span>
-                <span className="h-stat-value tabular">{timeStr} UTC</span>
-              </div>
-              <div className="h-stat">
-                <span className="h-stat-label">Rejim</span>
-                <span className="h-stat-value" style={{ color: isPositive ? "var(--pos)" : "var(--neg)" }}>
-                  {isPositive ? "● POZİTİF" : "● NEGATİF"}
-                </span>
-              </div>
-              <button className="h-action" onClick={data.reload}>↻ Yenile</button>
-            </div>
+      <main className="main">
+        {/* Topbar */}
+        <div className="topbar">
+          <div className="topbar-left">
+            <span style={{ fontFamily:"var(--mono)", fontSize:"var(--font-xs)", color:"var(--text-dim)" }}>
+              Deribit BTC GEX
+            </span>
+            <span style={{ color: isPos ? "var(--pos)" : "var(--neg)", fontFamily:"var(--mono)", fontSize:"var(--font-xs)" }}>
+              ● {isPos ? "POZİTİF GAMMA" : "NEGATİF GAMMA"}
+            </span>
+            <span style={{ color:"var(--spot)", fontFamily:"var(--mono)", fontWeight:600, fontSize:"var(--font-sm)" }}>
+              Spot: ${fmt(spot)}
+            </span>
+            <span style={{ color:"var(--text-mute)", fontFamily:"var(--mono)", fontSize:"var(--font-xs)" }}>
+              {lastUpdate ? `${lastUpdate.toLocaleDateString("tr-TR")} ${timeStr} UTC` : ""}
+            </span>
           </div>
-
-          {/* Hero */}
-          <Hero data={data} />
-
-          {/* Section i — Strike Topography */}
-          <section className="section">
-            <div className="section-head">
-              <h2 className="section-title">
-                <span className="section-nbr">i.</span>Strike Topography
-              </h2>
-              <span className="section-meta">
-                {data.strikes.length} STRIKE · {data.stats.expiries} VADE · {expiry === "all" ? "TÜMÜ" : expiry.toUpperCase()}
-              </span>
+          <div className="topbar-right">
+            <div className="h-stat">
+              <span className="h-stat-label">DVol</span>
+              <span className="h-stat-value">{dvol.toFixed(1)}</span>
             </div>
-            <div className="ladder-wrap">
-              <StrikeLadder data={data} expiry={expiry} />
-              <Sheet data={data} />
-            </div>
-          </section>
+            <button className={`h-btn ${fontSize === 1 ? "active" : ""}`} onClick={() => setFontSize(f => f === 0 ? 1 : 0)} title="Yazı boyutu +1pt">
+              Aa{fontSize === 1 ? "+" : ""}
+            </button>
+            <button className="h-btn" onClick={reload}>↻ Yenile</button>
+          </div>
+        </div>
 
-          {/* Section ii — Greeks */}
-          <section className="section">
-            <div className="section-head">
-              <h2 className="section-title">
-                <span className="section-nbr">ii.</span>Aggregate Greeks
-              </h2>
-              <span className="section-meta">DEALER-NORMALIZED · USD CİNSİNDEN</span>
-            </div>
-            <GreeksStack data={data} />
-          </section>
+        {/* Hero */}
+        <Hero spot={spot} change24h={change24h} totals={totals} levels={levels} dvol={dvol} />
 
-          {/* Section iii — Vol Surface */}
-          {data.options.length > 0 && (
-            <section className="section">
-              <div className="section-head">
-                <h2 className="section-title">
-                  <span className="section-nbr">iii.</span>Volatility Surface
-                </h2>
-                <span className="section-meta">VADE YAPISI · ATM IV</span>
-              </div>
-              <div className="term-card">
+        {/* Tabs */}
+        <div className="tabs-row">
+          <button className={`tab ${tab==="gex"?"active":""}`} onClick={() => setTab("gex")}>
+            📊 GEX Profili
+          </button>
+          <button className={`tab ${tab==="quantum"?"active":""}`} onClick={() => setTab("quantum")}>
+            ⚡ Quantum Walls
+          </button>
+          <div className="tabs-spacer"/>
+          <div className="expiry-btns">
+            {[["all","Tüm Vadeler"],["0-7d","0-7 Gün"],["8-45d","8-45 Gün"],["45d+","45+ Gün"]].map(([v,l]) => (
+              <button key={v} className={`expiry-btn ${expiry===v?"active":""}`} onClick={() => setExpiry(v)}>{l}</button>
+            ))}
+          </div>
+        </div>
+
+        {/* Chart */}
+        <div className="chart-card">
+          {tab === "gex" && (
+            <>
+              <div className="chart-header">
                 <div>
-                  <div className="sheet-label" style={{ marginBottom: 12 }}>ATM Vade Yapısı</div>
-                  <TermCurve data={data} />
-                  <p style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--text-dim)", marginTop: 8, lineHeight: 1.5 }}>
-                    Her nokta o vadenin ATM implied volatility'sini gösterir.
-                    GEX barları o vadedeki net gamma yoğunluğunu temsil eder.
-                  </p>
+                  <div className="chart-title">BTC/USD · Mum + Gamma Exposure</div>
+                  <div className="chart-sub">
+                    {expiry === "all" ? "Tüm vadeler" : expiry} · {strikes.length} strike · Spot ${fmt(spot)}
+                  </div>
                 </div>
-                <div>
-                  <div className="sheet-label" style={{ marginBottom: 12 }}>Senaryo Analizi</div>
-                  {[
-                    { label: "Spot yükselir ↑", target: data.levels.callWall, note: "Call Wall'da dealer delta satışı başlar" },
-                    { label: "Spot pinlenir", target: data.levels.maxPain, note: "Max Pain'de vol grinds lower, expiry yaklaştıkça" },
-                    { label: "Spot düşer ↓", target: data.levels.putWall, note: "Put Wall'da gamma negatife döner, vol genişler" },
-                    { label: "Zero Gamma kırılır", target: data.levels.zeroGamma, note: "Rejim değişimi — dealer flow ters döner" },
-                  ].map((s, i) => (
-                    <div key={i} style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 16, padding: "12px 0", borderBottom: "1px solid var(--hairline-soft)", fontFamily: "var(--mono)", fontSize: 11 }}>
-                      <div>
-                        <div style={{ color: "var(--text)", fontSize: 12, marginBottom: 2 }}>{s.label}</div>
-                        <div style={{ color: "var(--text-mute)", fontSize: 10, letterSpacing: "0.04em" }}>{s.note}</div>
-                      </div>
-                      <div style={{ textAlign: "right" }}>
-                        <div className="tabular" style={{ color: "var(--accent)", fontSize: 14, fontFamily: "var(--serif)" }}>${fmt(s.target)}</div>
-                      </div>
-                    </div>
-                  ))}
+                <div style={{ display:"flex", gap:16, fontFamily:"var(--mono)", fontSize:"var(--font-xs)", color:"var(--text-dim)" }}>
+                  <span>ZG: <b style={{ color:"var(--zero-gamma)" }}>${fmt(levels.zeroGamma)}</b></span>
+                  <span>MP: <b style={{ color:"var(--max-pain)" }}>${fmt(levels.maxPain)}</b></span>
+                  <span>CW: <b style={{ color:"var(--call)" }}>${fmt(levels.callWall)}</b></span>
+                  <span>PW: <b style={{ color:"var(--put)" }}>${fmt(levels.putWall)}</b></span>
                 </div>
               </div>
-            </section>
+              <GexChart strikes={strikes} spot={spot} levels={levels} ohlcv={ohlcv} expiry={expiry} />
+            </>
           )}
 
-          {/* Footer */}
-          <footer className="footer">
-            <div>
-              <div style={{ marginBottom: 4 }}>Options Desk · Deribit Live Feed</div>
-              <div style={{ color: "var(--text-dim)" }}>
-                {new Date().toLocaleDateString("tr-TR", { weekday: "long", day: "numeric", month: "long", year: "numeric" })}
-                {" · "}{data.stats.rows} kontrat · {data.stats.expiries} vade
-              </div>
-            </div>
-            <div className="footer-pagenum">— BTC Gamma —</div>
-          </footer>
-        </main>
-      </div>
-    </>
+          {tab === "quantum" && (
+            <QuantumChart classified={classified} spot={spot} levels={levels} />
+          )}
+        </div>
+
+        {/* Footer */}
+        <div className="footer">
+          <span>Options Desk · Deribit Live · {stats.rows} kontrat · {stats.expiries} vade</span>
+          <span>{new Date().toLocaleDateString("tr-TR", { weekday:"long", day:"numeric", month:"long", year:"numeric" })} · {timeStr} UTC</span>
+        </div>
+      </main>
+    </div>
   );
 }
