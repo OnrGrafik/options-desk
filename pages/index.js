@@ -286,6 +286,7 @@ function QuantumWalls({ data }) {
   const { classified, spot, levels } = data;
   const [tip, setTip]       = useState(null);
   const [tipPos, setTipPos] = useState({ x: 0, y: 0 });
+  const [hover, setHover]   = useState(null);
   const svgRef = useRef(null);
 
   const lo = spot * 0.80, hi = spot * 1.22;
@@ -327,9 +328,11 @@ function QuantumWalls({ data }) {
     }
     if (best && bestD < (hi - lo) * 0.025) {
       setTip(best);
+      setHover(best.strike);
       setTipPos({ x: e.clientX, y: e.clientY });
     } else {
       setTip(null);
+      setHover(null);
     }
   };
 
@@ -354,7 +357,7 @@ function QuantumWalls({ data }) {
           <span>{callWallsCount} WALLS · {magnetsCount} MAGNETS</span>
         </div>
 
-        <div style={{ position: "relative" }} onMouseLeave={() => setTip(null)}>
+        <div style={{ position: "relative" }} onMouseLeave={() => { setTip(null); setHover(null); }}>
           <svg
             ref={svgRef}
             viewBox={`0 0 ${W} ${H}`}
@@ -410,6 +413,14 @@ function QuantumWalls({ data }) {
 
               return (
                 <g key={`bar-${s.strike}`}>
+                  {/* Hover highlight */}
+                  {hover === s.strike && (
+                    <rect
+                      x={pad.left - 8} y={y - rowH / 2 - 1}
+                      width={W - pad.left - pad.right + 12} height={rowH + 2}
+                      fill="rgba(255,255,255,0.04)"
+                    />
+                  )}
                   {/* Magnet halo */}
                   {s.wallType === "magnet" && s.isSignificant && (
                     <rect x={pad.left} y={y - rowH / 2} width={totalW} height={rowH} fill="url(#qmg)" />
@@ -496,47 +507,74 @@ function QuantumWalls({ data }) {
             </text>
           </svg>
 
-          {/* Tooltip */}
-          {tip && (
-            <div style={{
-              position: "fixed",
-              left: Math.min(tipPos.x + 16, (typeof window !== "undefined" ? window.innerWidth : 1400) - 240),
-              top: Math.max(tipPos.y - 20, 10),
-              background: "#0f172aee",
-              border: "1px solid var(--hairline-strong)",
-              borderRadius: 6,
-              padding: "10px 14px",
-              fontFamily: "var(--mono)",
-              fontSize: 11,
-              pointerEvents: "none",
-              zIndex: 9999,
-              minWidth: 220,
-              backdropFilter: "blur(8px)",
-            }}>
-              <div style={{ color: "var(--accent)", fontWeight: "bold", fontSize: 13, marginBottom: 6 }}>
-                Strike: ${fmt(tip.strike)}
+          {/* Tooltip — orijinal tasarım: sağ üstte sabit tablo */}
+          {tip && (() => {
+            const wallLabel =
+              tip.wallType === "callWall" ? { txt: "CALL WALL", color: "var(--pos)" } :
+              tip.wallType === "putWall"  ? { txt: "PUT WALL",  color: "var(--neg)" } :
+              tip.wallType === "magnet"   ? { txt: "MAGNET",    color: "var(--neutral)" } :
+              { txt: "NEUTRAL", color: "var(--text-dim)" };
+
+            const totalOI   = tip.callOI + tip.putOI;
+            const gexDensity = tip.gexPct;
+
+            return (
+              <div style={{
+                position: "absolute",
+                top: 8,
+                right: 8,
+                background: "var(--surface)",
+                border: "1px solid var(--hairline-strong)",
+                borderRadius: 4,
+                fontFamily: "var(--mono)",
+                fontSize: 11,
+                pointerEvents: "none",
+                zIndex: 100,
+                minWidth: 200,
+                overflow: "hidden",
+              }}>
+                {/* Header: strike + wall type */}
+                <div style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  padding: "8px 12px",
+                  borderBottom: "1px solid var(--hairline)",
+                  background: "var(--surface-2)",
+                }}>
+                  <span style={{ fontSize: 14, fontWeight: 700, color: "var(--text)", letterSpacing: "-0.01em" }}>
+                    ${fmt(tip.strike)}
+                  </span>
+                  <span style={{
+                    fontSize: 9, fontWeight: 700, letterSpacing: "0.1em",
+                    color: wallLabel.color, textTransform: "uppercase",
+                  }}>
+                    {wallLabel.txt}
+                  </span>
+                </div>
+
+                {/* Data rows */}
+                {[
+                  ["Net γ",     (tip.netGex >= 0 ? "+" : "") + "$" + fmtB(tip.netGex),      tip.netGex >= 0 ? "var(--pos)" : "var(--neg)"],
+                  ["Call γ",    "$" + fmtB(tip.callGex),                                      "var(--pos)"],
+                  ["Put γ",     "$" + fmtB(Math.abs(tip.putGex)),                             "var(--neg)"],
+                  ["OI density", tip.oiPct + "%",                                             "var(--text)"],
+                  ["γ density",  gexDensity + "%",                                            "var(--text)"],
+                ].map(([label, value, color]) => (
+                  <div key={label} style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "baseline",
+                    padding: "5px 12px",
+                    borderBottom: "1px solid var(--hairline-soft)",
+                  }}>
+                    <span style={{ color: "var(--text-dim)", fontSize: 10, letterSpacing: "0.04em" }}>{label}</span>
+                    <span style={{ color, fontWeight: 600, fontSize: 11 }}>{value}</span>
+                  </div>
+                ))}
               </div>
-              {[
-                ["Net GEX",  fmtB(tip.netGex) + "$",              tip.netGex >= 0 ? "var(--pos)" : "var(--neg)"],
-                ["Call GEX", "$" + fmtB(tip.callGex),             "var(--pos)"],
-                ["Put GEX",  "$" + fmtB(Math.abs(tip.putGex)),    "var(--neg)"],
-              ].map(([l, v, c]) => (
-                <div key={l} style={{ display: "flex", justifyContent: "space-between", color: "var(--text-2)", lineHeight: 1.7 }}>
-                  <span>{l}</span><span style={{ color: c, fontWeight: 600 }}>{v}</span>
-                </div>
-              ))}
-              <div style={{ borderTop: "1px solid var(--hairline)", margin: "5px 0" }} />
-              {[
-                ["Call OI", tip.callOI.toFixed(1) + " BTC"],
-                ["Put OI",  tip.putOI.toFixed(1) + " BTC"],
-                ["OI %",    tip.oiPct + "%"],
-              ].map(([l, v]) => (
-                <div key={l} style={{ display: "flex", justifyContent: "space-between", color: "var(--text-2)", lineHeight: 1.7 }}>
-                  <span>{l}</span><span>{v}</span>
-                </div>
-              ))}
-            </div>
-          )}
+            );
+          })()}
         </div>
       </div>
 
