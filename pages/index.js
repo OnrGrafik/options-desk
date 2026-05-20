@@ -3,7 +3,7 @@ import Head from "next/head";
 import {
   fetchSpot, fetchWatchlist, fetchTicker24h, fetchFunding, fetchBasis,
   fetchDeribitInstruments, fetchAllOptions,
-  aggregateByStrike, findLevels, classifyStrikes,
+  aggregateByStrike, findLevels, classifyStrikes, calcVolSurface,
 } from "../lib/gex";
 
 // ─── Yardımcılar ──────────────────────────────────────────
@@ -92,13 +92,14 @@ function useData(vadeFiltresi) {
   const strikes    = aggregateByStrike(raw.allOptions, vadeFiltresi);
   const levels     = findLevels(strikes, raw.spot, raw.allOptions);
   const classified = classifyStrikes(strikes, raw.spot);
+  const volSurface = calcVolSurface(raw.allOptions, raw.spot);
   const totals = {
     gamma: strikes.reduce((a, x) => a + x.netGex, 0),
     vanna: strikes.reduce((a, x) => a + x.vannaNet, 0),
     charm: strikes.reduce((a, x) => a + x.charmNet, 0),
   };
 
-  return { ...raw, strikes, levels, classified, totals, yenile: () => load() };
+  return { ...raw, strikes, levels, classified, totals, volSurface, yenile: () => load() };
 }
 
 // ─── KENAR ÇUBUĞU ─────────────────────────────────────────
@@ -636,30 +637,37 @@ function TopluGreekler({ data }) {
   );
 }
 
-// ─── VOLATİLİTE YAPISI ────────────────────────────────────
+// ─── ATM VADE YAPISI (calcVolSurface'den) ─────────────────
 function VadeYapisi({ data }) {
-  const harita = {};
-  for (const o of data.allOptions) {
-    if (!harita[o.expiryTs]) harita[o.expiryTs] = { gun: o.daysToExp, ivler: [] };
-    harita[o.expiryTs].ivler.push({ iv: o.iv, uzak: Math.abs(o.strike - data.spot) });
-  }
-  const noktalar = Object.values(harita)
-    .map(e => { e.ivler.sort((a, b) => a.uzak - b.uzak); return { gun: e.gun, iv: e.ivler[0].iv * 100 }; })
-    .sort((a, b) => a.gun - b.gun);
-  if (noktalar.length < 2) return null;
+  // calcVolSurface log-moneyness interpolasyonunu kullanır
+  const noktalar = (data.volSurface?.termStructure || [])
+    .filter(p => p.days > 0 && p.iv > 5 && p.iv < 200)
+    .sort((a, b) => a.days - b.days);
+
+  if (noktalar.length < 2) return (
+    <div style={{ color: "var(--text-mute)", fontFamily: "var(--mono)", fontSize: 10, padding: "20px 0" }}>
+      Vade yapısı hesaplanıyor...
+    </div>
+  );
 
   const W = 560, H = 220, pad = { top: 18, right: 20, bottom: 30, left: 40 };
-  const maxGun = Math.max(...noktalar.map(p => p.gun));
-  const minIV  = Math.min(...noktalar.map(p => p.iv)) - 4;
-  const maxIV  = Math.max(...noktalar.map(p => p.iv)) + 4;
+  const maxGun = Math.max(...noktalar.map(p => p.days));
+  const minIV  = Math.floor(Math.min(...noktalar.map(p => p.iv)) / 5) * 5 - 5;
+  const maxIV  = Math.ceil(Math.max(...noktalar.map(p => p.iv)) / 5) * 5 + 5;
   const xS = g => pad.left + (g / maxGun) * (W - pad.left - pad.right);
   const yS = iv => pad.top + ((maxIV - iv) / (maxIV - minIV)) * (H - pad.top - pad.bottom);
-  const yol = noktalar.map((p, i) => `${i === 0 ? "M" : "L"} ${xS(p.gun)} ${yS(p.iv)}`).join(" ");
+  const yol = noktalar.map((p, i) => `${i === 0 ? "M" : "L"} ${xS(p.days)} ${yS(p.iv)}`).join(" ");
+
+  // Y ekseni için güzel sayılar
+  const ivTicks = [];
+  for (let iv = Math.ceil(minIV / 10) * 10; iv <= maxIV; iv += 10) {
+    if (iv >= minIV && iv <= maxIV) ivTicks.push(iv);
+  }
 
   return (
     <svg viewBox={`0 0 ${W} ${H}`} className="term-svg">
-      {[40, 50, 60, 70].map(iv => {
-        const y = yS(iv); if (y < pad.top || y > H - pad.bottom) return null;
+      {ivTicks.map(iv => {
+        const y = yS(iv); if (y < pad.top - 2 || y > H - pad.bottom + 2) return null;
         return (
           <g key={iv}>
             <line x1={pad.left} x2={W - pad.right} y1={y} y2={y} stroke="var(--hairline-soft)" strokeWidth="0.6" />
@@ -673,16 +681,15 @@ function VadeYapisi({ data }) {
           <text x={xS(g)} y={H - pad.bottom + 16} textAnchor="middle" fontFamily="var(--mono)" fontSize="9" fill="var(--text-mute)">{g}g</text>
         </g>
       ))}
-      <path d={`${yol} L ${xS(noktalar[noktalar.length-1].gun)} ${H-pad.bottom} L ${pad.left} ${H-pad.bottom} Z`} fill="var(--accent)" opacity="0.06" />
+      <path d={`${yol} L ${xS(noktalar[noktalar.length-1].days)} ${H-pad.bottom} L ${pad.left} ${H-pad.bottom} Z`} fill="var(--accent)" opacity="0.06" />
       <path d={yol} fill="none" stroke="var(--accent)" strokeWidth="1.5" />
       {noktalar.map((p, i) => (
         <g key={i}>
-          <circle cx={xS(p.gun)} cy={yS(p.iv)} r="3" fill="var(--bg)" stroke="var(--accent)" strokeWidth="1.4" />
-          {(i === 0 || i === noktalar.length - 1 || i === Math.floor(noktalar.length / 2)) && (
-            <text x={xS(p.gun)} y={yS(p.iv) - 9} textAnchor="middle" fontFamily="var(--mono)" fontSize="10" fill="var(--text-2)">
-              {p.iv.toFixed(0)}
-            </text>
-          )}
+          <circle cx={xS(p.days)} cy={yS(p.iv)} r="3" fill="var(--bg)" stroke="var(--accent)" strokeWidth="1.4" />
+          {/* Her noktaya label */}
+          <text x={xS(p.days)} y={yS(p.iv) - 9} textAnchor="middle" fontFamily="var(--mono)" fontSize="9" fill="var(--text-2)">
+            {p.iv.toFixed(0)}
+          </text>
         </g>
       ))}
       <text x={pad.left} y={12} fontFamily="var(--mono)" fontSize="9" fill="var(--text-mute)" letterSpacing="0.12em">ATM IV (%)</text>
@@ -690,54 +697,75 @@ function VadeYapisi({ data }) {
   );
 }
 
+// ─── 25Δ RİSK-REVERSAL ÇARPIKLIĞI (calcVolSurface'den) ────
+// RR(25Δ) = IV(25Δ put) - IV(25Δ call) [vol noktaları]
+// Pozitif → downside bias (put daha pahalı)
 function CarpiklıkGraf({ data }) {
-  const harita = {};
-  for (const o of data.allOptions) {
-    if (!harita[o.expiryTs]) harita[o.expiryTs] = { gun: o.daysToExp, c25: null, p25: null, cF: Infinity, pF: Infinity };
-    const e = harita[o.expiryTs];
-    if (o.type === "call" && o.delta && Math.abs(o.delta - 0.25) < e.cF) { e.cF = Math.abs(o.delta - 0.25); e.c25 = o.iv; }
-    if (o.type === "put"  && o.delta && Math.abs(o.delta + 0.25) < e.pF) { e.pF = Math.abs(o.delta + 0.25); e.p25 = o.iv; }
-  }
-  const veriler = Object.values(harita)
-    .filter(e => e.c25 && e.p25)
-    .map(e => ({ g: e.gun, carpiklik: (e.p25 - e.c25) * 100 }))
-    .sort((a, b) => a.g - b.g)
-    .slice(0, 8);
+  const satirlar = (data.volSurface?.riskReversals || [])
+    .filter(r => Math.abs(r.rr) > 0 && Math.abs(r.rr) < 15)
+    .sort((a, b) => a.days - b.days)
+    .slice(0, 10);
 
-  const satirlar = veriler.length >= 3 ? veriler : [
-    { g: 2, carpiklik: 8.4 }, { g: 9, carpiklik: 6.8 }, { g: 23, carpiklik: 6.1 },
-    { g: 65, carpiklik: 5.4 }, { g: 156, carpiklik: 4.9 }, { g: 247, carpiklik: 4.6 },
-  ];
+  // Gerçek veri yoksa — göster değil
+  if (!satirlar.length) return (
+    <div style={{ color: "var(--text-mute)", fontFamily: "var(--mono)", fontSize: 10, padding: "20px 0" }}>
+      25Δ çarpıklık hesaplanıyor...
+    </div>
+  );
 
-  const W = 560, H = 220, pad = { top: 18, right: 20, bottom: 30, left: 40 };
-  const maxG = Math.max(...satirlar.map(e => e.g));
-  const maxC = Math.max(...satirlar.map(e => e.carpiklik)) + 1.5;
+  const W = 560, H = 220, pad = { top: 22, right: 20, bottom: 30, left: 44 };
+  const maxG = Math.max(...satirlar.map(e => e.days));
+  const allRR = satirlar.map(e => e.rr);
+  const maxRR = Math.max(...allRR) + 1.5;
+  const minRR = Math.min(0, Math.min(...allRR) - 0.5);
+  const rangeRR = maxRR - minRR;
   const xS = g => pad.left + (g / maxG) * (W - pad.left - pad.right);
-  const yS = c => pad.top + ((maxC - c) / maxC) * (H - pad.top - pad.bottom);
+  const yS = rr => pad.top + ((maxRR - rr) / rangeRR) * (H - pad.top - pad.bottom);
+  const y0 = yS(0); // sıfır çizgisi
+
+  // Y eksen ticks
+  const rrTicks = [];
+  for (let r = Math.floor(minRR / 2) * 2; r <= maxRR; r += 2) rrTicks.push(r);
 
   return (
     <svg viewBox={`0 0 ${W} ${H}`} className="term-svg">
-      {[0, 2, 4, 6, 8].map(c => {
-        const y = yS(c);
+      {rrTicks.map(r => {
+        const y = yS(r); if (y < pad.top - 2 || y > H - pad.bottom + 2) return null;
         return (
-          <g key={c}>
-            <line x1={pad.left} x2={W - pad.right} y1={y} y2={y} stroke="var(--hairline-soft)" strokeWidth="0.6" />
-            <text x={pad.left - 5} y={y + 3} textAnchor="end" fontFamily="var(--mono)" fontSize="9" fill="var(--text-mute)">+{c} vol</text>
+          <g key={r}>
+            <line x1={pad.left} x2={W - pad.right} y1={y} y2={y}
+              stroke={r === 0 ? "var(--hairline-strong)" : "var(--hairline-soft)"}
+              strokeWidth={r === 0 ? 0.8 : 0.5} />
+            <text x={pad.left - 5} y={y + 3} textAnchor="end" fontFamily="var(--mono)" fontSize="9" fill="var(--text-mute)">
+              {r >= 0 ? "+" : ""}{r} vol
+            </text>
           </g>
         );
       })}
       {satirlar.map(e => {
-        const bW = 30, x = xS(e.g), y = yS(e.carpiklik);
+        const bW = Math.min(36, (W - pad.left - pad.right) / satirlar.length * 0.7);
+        const x = xS(e.days);
+        const y = e.rr >= 0 ? yS(e.rr) : y0;
+        const barH = Math.abs(yS(e.rr) - y0);
+        const renk = e.rr >= 0 ? "var(--neg)" : "var(--pos)"; // pozitif RR = put bias = bearish (kırmızı)
         return (
-          <g key={e.g}>
-            <rect x={x - bW / 2} y={y} width={bW} height={H - pad.bottom - y} fill="var(--neg)" opacity="0.42" />
-            <line x1={x - bW / 2} x2={x + bW / 2} y1={y} y2={y} stroke="var(--neg)" strokeWidth="1.4" />
-            <text x={x} y={y - 6} textAnchor="middle" fontFamily="var(--mono)" fontSize="10" fill="var(--text-2)">{e.carpiklik.toFixed(1)}</text>
-            <text x={x} y={H - pad.bottom + 16} textAnchor="middle" fontFamily="var(--mono)" fontSize="9" fill="var(--text-mute)">{e.g}g</text>
+          <g key={e.days}>
+            <rect x={x - bW / 2} y={y} width={bW} height={barH || 1} fill={renk} opacity="0.55" />
+            <line x1={x - bW / 2} x2={x + bW / 2} y1={y} y2={y} stroke={renk} strokeWidth="1.5" />
+            <text x={x} y={e.rr >= 0 ? yS(e.rr) - 6 : yS(e.rr) + 14}
+              textAnchor="middle" fontFamily="var(--mono)" fontSize="9" fill="var(--text-2)">
+              {e.rr.toFixed(1)}
+            </text>
+            <text x={x} y={H - pad.bottom + 16}
+              textAnchor="middle" fontFamily="var(--mono)" fontSize="9" fill="var(--text-mute)">
+              {e.days}g
+            </text>
           </g>
         );
       })}
-      <text x={pad.left} y={12} fontFamily="var(--mono)" fontSize="9" fill="var(--text-mute)" letterSpacing="0.10em">25Δ SAT − 25Δ AL (vol noktası)</text>
+      <text x={pad.left} y={12} fontFamily="var(--mono)" fontSize="9" fill="var(--text-mute)" letterSpacing="0.10em">
+        25Δ SAT − 25Δ AL (vol noktası)
+      </text>
     </svg>
   );
 }
@@ -859,15 +887,20 @@ export default function AnaSayfa() {
                 <div className="sheet-label" style={{ marginBottom: 12 }}>ATM Vade Yapısı</div>
                 <VadeYapisi data={data} />
                 <p style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--text-dim)", marginTop: 8, lineHeight: 1.55 }}>
-                  Eğri 90 güne kadar <b style={{ color: "var(--text-2)" }}>yukarı eğimli</b>.
-                  Kısa uç <b style={{ color: "var(--text-2)" }}>~{data.dvol.toFixed(0)}%</b> seviyesinde sabitlenmiş.
+                  {data.volSurface?.termStructure?.length > 0
+                    ? `Eğri ${data.volSurface.termStructure.length} vadeden hesaplandı. Kısa uç ~${data.dvol.toFixed(0)}% seviyesinde.`
+                    : "Vade yapısı log-moneyness interpolasyonuyla hesaplanıyor..."
+                  }
                 </p>
               </div>
               <div>
                 <div className="sheet-label" style={{ marginBottom: 12 }}>Risk-Reversal Çarpıklığı</div>
                 <CarpiklıkGraf data={data} />
                 <p style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--text-dim)", marginTop: 8, lineHeight: 1.55 }}>
-                  Kısa vadede satım çarpıklığı yüksek — hedge akışı kısa vadede baskın.
+                  {data.volSurface?.riskReversals?.length > 0
+                    ? `${data.volSurface.riskReversals.length} vade için hesaplandı. RR = IV(25Δ put) − IV(25Δ call)`
+                    : "25Δ risk-reversal hesaplanıyor..."
+                  }
                 </p>
               </div>
             </div>
