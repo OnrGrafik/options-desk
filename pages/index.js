@@ -239,7 +239,7 @@ function SbStat({ label, value, pos }) {
   return (
     <div className="sb-item">
       <span className="sb-item-key" style={{ color: "var(--text-mute)", fontSize: 10, letterSpacing: "0.08em" }}>{label}</span>
-      <span className="sb-item-val" style={{ color: pos === true ? "var(--pos)" : pos === false ? "var(--neg)" : "var(--text)", fontSize: 11 }}>{value}</span>
+      <span className="sb-item-val" style={{ color: pos === true ? "var(--pos)" : pos === false ? "var(--neg)" : "var(--text)", fontSize: 12, fontWeight: 500 }}>{value}</span>
     </div>
   );
 }
@@ -292,7 +292,7 @@ function StrikeLadder({ data }) {
               padding: "8px 12px", borderBottom: "1px solid var(--hairline)",
               background: "var(--surface-2)",
             }}>
-              <span style={{ fontSize: 14, fontWeight: 700, color: "var(--text)" }}>
+              <span style={{ fontSize: 14, fontWeight: 700, color: "var(--text)", fontFamily: "var(--sans)" }}>
                 ${fmt(hovered.strike)}
               </span>
               <span style={{ fontSize: 9, fontWeight: 700, letterSpacing: "0.1em", color: wt.renk }}>
@@ -313,8 +313,8 @@ function StrikeLadder({ data }) {
                 display: "flex", justifyContent: "space-between", alignItems: "baseline",
                 padding: "4px 12px", borderBottom: "1px solid var(--hairline-soft)",
               }}>
-                <span style={{ color: "var(--text-dim)", fontSize: 10 }}>{lbl}</span>
-                <span style={{ color: clr, fontWeight: 600, fontSize: 11 }}>{val}</span>
+                <span style={{ fontFamily: "var(--sans)", color: "var(--text-dim)", fontSize: 10, fontWeight: 600 }}>{lbl}</span>
+                <span style={{ fontFamily: "var(--sans)", color: clr, fontWeight: 700, fontSize: 11 }}>{val}</span>
               </div>
             ))}
           </div>
@@ -357,7 +357,7 @@ function StrikeLadder({ data }) {
               onMouseLeave={() => setHoveredStrike(null)}
             >
               <div className={`tag ${tag?.cls || ""}`}>{tag?.txt || ""}</div>
-              <div style={{ color: "var(--text-dim)", textAlign: "center", fontSize: 10 }}>{s.oiPct}%</div>
+              <div style={{ fontFamily: "var(--sans)", fontSize: 11, fontWeight: 700, color: "var(--text-dim)", textAlign: "center" }}>{s.oiPct}%</div>
               <div className="bar-cell put">
                 <div className="bar put" style={{ width: `${putPct}%`, opacity: isHov ? 1 : 0.85 }} />
               </div>
@@ -444,7 +444,7 @@ function HullCommentary({ data }) {
       {/* Başlık */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
         <div>
-          <span style={{ fontFamily: "var(--mono)", fontSize: 9, color: "var(--text-mute)", letterSpacing: "0.14em", textTransform: "uppercase" }}>
+          <span style={{ fontFamily: "var(--sans)", fontSize: 10, fontWeight: 600, color: "var(--text-mute)", letterSpacing: "0.10em", textTransform: "uppercase" }}>
             Hull Analizi · Anlık Yorum
           </span>
           <div style={{ fontFamily: "var(--serif)", fontStyle: "italic", fontSize: 14, color: yorum.posGamma ? "var(--pos)" : "var(--neg)", marginTop: 2 }}>
@@ -469,7 +469,7 @@ function HullCommentary({ data }) {
           { lbl: "Put Wall", val: yorum.pw, pct: "−" + yorum.distToPW + "%", clr: "var(--neg)" },
         ].map((r, i) => (
           <div key={i} style={{ textAlign: i === 1 ? "center" : i === 0 ? "left" : "right" }}>
-            <div style={{ fontFamily: "var(--mono)", fontSize: 8, color: "var(--text-mute)", letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 2 }}>{r.lbl}</div>
+            <div style={{ fontFamily: "var(--sans)", fontSize: 10, fontWeight: 600, color: "var(--text-mute)", letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 2 }}>{r.lbl}</div>
             <div style={{ fontFamily: "var(--serif)", fontSize: 15, color: r.clr, fontWeight: 600 }}>
               {r.isNum ? `$${fmt(r.val)}` : `$${fmt(r.val)}`}
             </div>
@@ -482,7 +482,7 @@ function HullCommentary({ data }) {
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         {satirlar.map((s, i) => (
           <div key={i} style={{
-            fontFamily: "var(--mono)", fontSize: 10, color: "var(--text-2)",
+            fontFamily: "var(--sans)", fontSize: 10, fontWeight: 700, color: "var(--text-2)",
             lineHeight: 1.55, paddingLeft: 10,
             borderLeft: `2px solid ${i === 0 ? (yorum.posGamma ? "var(--pos)" : "var(--neg)") : "var(--hairline-strong)"}`,
           }}>
@@ -492,7 +492,7 @@ function HullCommentary({ data }) {
       </div>
 
       {/* Hull referans notu */}
-      <div style={{ fontFamily: "var(--mono)", fontSize: 9, color: "var(--text-mute)", borderTop: "1px solid var(--hairline-soft)", paddingTop: 8 }}>
+      <div style={{ fontFamily: "var(--sans)", fontSize: 10, fontWeight: 400, color: "var(--text-mute)", borderTop: "1px solid var(--hairline-soft)", paddingTop: 8 }}>
         Hull, J.C. "Options, Futures, and Other Derivatives" 11e · Bölüm 19–20
       </div>
     </div>
@@ -668,7 +668,7 @@ function QuantumWalls({ data }) {
                 pointerEvents: "none", zIndex: 100, minWidth: 200, overflow: "hidden",
               }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 12px", borderBottom: "1px solid var(--hairline)", background: "var(--surface-2)" }}>
-                  <span style={{ fontSize: 14, fontWeight: 700, color: "var(--text)" }}>${fmt(ipucu.strike)}</span>
+                  <span style={{ fontSize: 14, fontWeight: 700, color: "var(--text)", fontFamily: "var(--sans)" }}>${fmt(ipucu.strike)}</span>
                   <span style={{ fontSize: 9, fontWeight: 700, letterSpacing: "0.1em", color: wl.renk }}>{wl.txt}</span>
                 </div>
                 {[
@@ -679,8 +679,8 @@ function QuantumWalls({ data }) {
                   ["γ density",  ipucu.gexPct + "%", "var(--text)"],
                 ].map(([e, d, r]) => (
                   <div key={e} style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", padding: "5px 12px", borderBottom: "1px solid var(--hairline-soft)" }}>
-                    <span style={{ color: "var(--text-dim)", fontSize: 10 }}>{e}</span>
-                    <span style={{ color: r, fontWeight: 600 }}>{d}</span>
+                    <span style={{ fontFamily: "var(--sans)", color: "var(--text-dim)", fontSize: 10, fontWeight: 600 }}>{e}</span>
+                    <span style={{ fontFamily: "var(--sans)", fontSize: 11, fontWeight: 700, color: r }}>{d}</span>
                   </div>
                 ))}
               </div>
@@ -694,7 +694,7 @@ function QuantumWalls({ data }) {
         <p style={{ fontFamily: "var(--serif)", fontSize: 16, lineHeight: 1.45, color: "var(--text-2)", marginBottom: 22 }}>
           İki <em style={{ fontStyle: "italic", color: "var(--accent)" }}>$5K-bant</em> spot'u çerçeveler: yukarıda Call Wall kümesi, aşağıda Put Wall yığını. Aralarında dealer hedging gerçekleşen volatiliteyi <em style={{ fontStyle: "italic", color: "var(--accent)" }}>bastırır</em>.
         </p>
-        <div style={{ fontFamily: "var(--mono)", fontSize: 9, color: "var(--text-mute)", letterSpacing: "0.14em", textTransform: "uppercase", marginBottom: 14 }}>
+        <div style={{ fontFamily: "var(--sans)", fontSize: 10, fontWeight: 600, color: "var(--text-mute)", letterSpacing: "0.10em", textTransform: "uppercase", marginBottom: 14 }}>
           Top Walls — Sıralı ↓
         </div>
         {topWalls.map((w, i) => {
@@ -910,7 +910,7 @@ export default function AnaSayfa() {
               <div>
                 <div className="sheet-label" style={{ marginBottom: 12 }}>ATM Term Structure</div>
                 <TermStructure data={data} />
-                <p style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--text-dim)", marginTop: 8, lineHeight: 1.55 }}>
+                <p style={{ fontFamily: "var(--sans)", fontSize: 10, fontWeight: 700, color: "var(--text-dim)", marginTop: 8, lineHeight: 1.55 }}>
                   {data.volSurface?.termStructure?.length > 0
                     ? `${data.volSurface.termStructure.length} vade · Log-moneyness interpolasyonu · ATM IV ~${data.dvol.toFixed(0)}%`
                     : "Hesaplanıyor..."}
@@ -919,7 +919,7 @@ export default function AnaSayfa() {
               <div>
                 <div className="sheet-label" style={{ marginBottom: 12 }}>25Δ Risk Reversal</div>
                 <RiskReversal data={data} />
-                <p style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--text-dim)", marginTop: 8, lineHeight: 1.55 }}>
+                <p style={{ fontFamily: "var(--sans)", fontSize: 10, fontWeight: 700, color: "var(--text-dim)", marginTop: 8, lineHeight: 1.55 }}>
                   {data.volSurface?.riskReversals?.length > 0
                     ? `RR = IV(25Δ put) − IV(25Δ call) · ${data.volSurface.riskReversals.length} vade · Pozitif = put bias`
                     : "Hesaplanıyor..."}
@@ -940,7 +940,7 @@ export default function AnaSayfa() {
                   Put Wall ile Call Wall arasındaki <em>${fmt(cw - pw)}</em> bant gerçekleşen volatiliteyi sınırlar —
                   tepeden dibe <em>{((cw - pw) / sp * 100).toFixed(1)}%</em>.
                 </p>
-                <p style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-2)", lineHeight: 1.7, margin: 0 }}>
+                <p style={{ fontFamily: "var(--sans)", fontSize: 12, fontWeight: 400, color: "var(--text-2)", lineHeight: 1.7, margin: 0 }}>
                   Dealer'lar bu haftaya {pozitif ? "net long" : "net short"} {fmtB(data.totals.gamma)}$ gamma ile giriyor,
                   {" "}<b style={{ color: "var(--text)" }}>{fmt(data.levels.callWall)}</b> Call Wall'unda yoğunlaşmış.
                   Bu yapısal bir <b style={{ color: "var(--text)" }}>mean-reversion</b> bias yaratır —
@@ -957,8 +957,8 @@ export default function AnaSayfa() {
                 ].map(s => (
                   <div key={s.etiket} style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 16, padding: "12px 0", borderBottom: "1px solid var(--hairline-soft)", fontFamily: "var(--mono)", fontSize: 11 }}>
                     <div>
-                      <div style={{ color: "var(--text)", fontSize: 12, marginBottom: 2 }}>{s.etiket}</div>
-                      <div style={{ color: "var(--text-mute)", fontSize: 10 }}>{s.not}</div>
+                      <div style={{ fontFamily: "var(--sans)", color: "var(--text)", fontSize: 13, fontWeight: 600, marginBottom: 2 }}>{s.etiket}</div>
+                      <div style={{ fontFamily: "var(--sans)", color: "var(--text-mute)", fontSize: 10, fontWeight: 700 }}>{s.not}</div>
                     </div>
                     <div style={{ textAlign: "right" }}>
                       <div className="tabular" style={{ color: "var(--accent)", fontSize: 14, fontFamily: "var(--serif)" }}>${fmt(s.hedef)}</div>
@@ -972,8 +972,8 @@ export default function AnaSayfa() {
           {/* Alt bilgi */}
           <footer className="footer">
             <div>
-              <div style={{ marginBottom: 4 }}>Options Desk · Deribit · Günlük Özet</div>
-              <div style={{ color: "var(--text-dim)" }}>
+              <div style={{ marginBottom: 4, fontFamily: "var(--sans)", fontSize: 11, fontWeight: 500 }}>Options Desk · Deribit · Günlük Özet</div>
+              <div style={{ color: "var(--text-dim)", fontFamily: "var(--sans)", fontSize: 10, fontWeight: 400 }}>
                 {new Date().toLocaleDateString("tr-TR", { weekday: "long", day: "numeric", month: "long", year: "numeric" })}
                 {" · "}{data.stats.rows} kontrat · {data.stats.expiries} vade
               </div>
