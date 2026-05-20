@@ -13,10 +13,9 @@ const fmtB = (n) => {
   const abs = Math.abs(n);
   if (abs >= 1e9) return `${(n/1e9).toFixed(2)}Mr`;
   if (abs >= 1e6) return `${(n/1e6).toFixed(1)}M`;
-  if (abs >= 1e3) return `${(n/1e3).toFixed(0)}B`;
+  if (abs >= 1e3) return `${(n/1e3).toFixed(0)}K`;
   return n.toFixed(0);
 };
-const fmtPct = (pct) => pct != null ? `${parseFloat(pct) >= 0 ? "+" : ""}${parseFloat(pct).toFixed(2)}%` : "—";
 
 function useCountUp(target, ms = 700) {
   const [v, setV] = useState(target);
@@ -35,7 +34,7 @@ function useCountUp(target, ms = 700) {
   return v;
 }
 
-// ─── Veri hook'u ──────────────────────────────────────────
+// ─── Veri ─────────────────────────────────────────────────
 function useData(vadeFiltresi) {
   const [raw, setRaw] = useState({
     spot: 0, allOptions: [], watchlist: [],
@@ -55,13 +54,13 @@ function useData(vadeFiltresi) {
 
       const guvenliListe = watchlist || [
         { sym: "BTC", price: spot || 0, chg: ticker24h?.change || 0 },
-        { sym: "ETH", price: 0, chg: 0 },
-        { sym: "SOL", price: 0, chg: 0 },
-        { sym: "BNB", price: 0, chg: 0 },
-        { sym: "XRP", price: 0, chg: 0 },
+        { sym: "ETH", price: 0, chg: 0 }, { sym: "SOL", price: 0, chg: 0 },
+        { sym: "BNB", price: 0, chg: 0 }, { sym: "XRP", price: 0, chg: 0 },
       ];
 
-      setRaw(s => ({ ...s, spot: spot || 0, watchlist: guvenliListe, ticker24h: ticker24h || s.ticker24h, funding: funding || 0, basis: basis || 0, progress: "Opsiyon zinciri çekiliyor..." }));
+      setRaw(s => ({ ...s, spot: spot || 0, watchlist: guvenliListe,
+        ticker24h: ticker24h || s.ticker24h, funding: funding || 0,
+        basis: basis || 0, progress: "Opsiyon zinciri çekiliyor..." }));
 
       const enstrumanlar = await fetchDeribitInstruments();
       if (!enstrumanlar.length) throw new Error("Opsiyon verisi alınamadı");
@@ -70,7 +69,8 @@ function useData(vadeFiltresi) {
         setRaw(s => ({ ...s, progress: `Analiz: %${pct} · ${rows} opsiyon · ${exps} vade` }));
       });
 
-      const atmOpt = options.filter(o => o.type === "call").sort((a, b) => Math.abs(a.strike - spot) - Math.abs(b.strike - spot))[0];
+      const atmOpt = options.filter(o => o.type === "call")
+        .sort((a, b) => Math.abs(a.strike - spot) - Math.abs(b.strike - spot))[0];
 
       setRaw(s => ({
         ...s, spot: spot || 0, allOptions: options, watchlist: guvenliListe,
@@ -109,7 +109,7 @@ function KenarCubugu({ data, vade, setVade }) {
       <div className="brand">
         <div className="brand-mark">œ</div>
         <div>
-          <div className="brand-name">Opsiyon Masası</div>
+          <div className="brand-name">Options Desk</div>
           <div className="brand-sub">Vol &amp; Gamma · v.4.2</div>
         </div>
       </div>
@@ -141,20 +141,20 @@ function KenarCubugu({ data, vade, setVade }) {
       </div>
 
       <div className="sb-section">
-        <div className="sb-label">Hızlı İstatistikler</div>
-        <SbStat label="DVOL"         value={data.dvol.toFixed(1)} />
-        <SbStat label="ATM IV"       value={`${data.dvol.toFixed(1)}%`} />
-        <SbStat label="Fonlama"      value={`${(data.funding * 100).toFixed(3)}%`} pos={data.funding >= 0} />
-        <SbStat label="Baz (90g)"    value={data.basis ? `${data.basis > 0 ? "+" : ""}${data.basis.toFixed(1)}%` : "+7.4%"} pos />
-        <SbStat label="25Δ Çarpıklık" value="+6.4 vol" pos={false} />
+        <div className="sb-label">Piyasa Verileri</div>
+        <SbStat label="DVOL"        value={data.dvol.toFixed(1)} />
+        <SbStat label="ATM IV"      value={`${data.dvol.toFixed(1)}%`} />
+        <SbStat label="Funding"     value={`${(data.funding * 100).toFixed(3)}%`} pos={data.funding >= 0} />
+        <SbStat label="Basis (90g)" value={data.basis ? `${data.basis > 0 ? "+" : ""}${data.basis.toFixed(1)}%` : "+7.4%"} pos />
+        <SbStat label="25Δ Skew"    value="+6.4 vol" pos={false} />
       </div>
 
       <div className="sb-section" style={{ marginTop: "auto" }}>
         <div className="sb-label">Seans</div>
-        <SbStat label="Açılış"     value={fmt(data.ticker24h.open)} />
+        <SbStat label="Açılış"       value={fmt(data.ticker24h.open)} />
         <SbStat label="Yüksek (24s)" value={fmt(data.ticker24h.high)} />
         <SbStat label="Düşük (24s)"  value={fmt(data.ticker24h.low)} />
-        <SbStat label="Opsiyon"    value={`${data.stats.rows} adet`} />
+        <SbStat label="Opsiyon"      value={`${data.stats.rows} adet`} />
       </div>
     </aside>
   );
@@ -168,16 +168,16 @@ function SbStat({ label, value, pos }) {
   );
 }
 
-// ─── STRIKE TOPOGRAFYASI TABLOSU ──────────────────────────
-function StrikeMerdiveni({ data }) {
+// ─── STRIKE TABLOSU ───────────────────────────────────────
+function StrikeLadder({ data }) {
   const { strikes, spot, levels, classified } = data;
   const lo = spot * 0.90, hi = spot * 1.10;
-  const gorunen = [...classified.filter(s => s.strike >= lo && s.strike <= hi)].sort((a, b) => b.strike - a.strike);
+  const vis = [...classified.filter(s => s.strike >= lo && s.strike <= hi)].sort((a, b) => b.strike - a.strike);
 
-  const maxCall = Math.max(...gorunen.map(s => s.callGex), 1);
-  const maxPut  = Math.max(...gorunen.map(s => Math.abs(s.putGex)), 1);
+  const maxCall = Math.max(...vis.map(s => s.callGex), 1);
+  const maxPut  = Math.max(...vis.map(s => Math.abs(s.putGex)), 1);
 
-  const etiketBul = (strike) => {
+  const tagFor = (strike) => {
     if (strike === levels.callWall)  return { txt: "CW", cls: "cw" };
     if (strike === levels.putWall)   return { txt: "PW", cls: "pw" };
     if (strike === levels.maxPain)   return { txt: "MP", cls: "mp" };
@@ -185,33 +185,32 @@ function StrikeMerdiveni({ data }) {
     return null;
   };
 
-  const spotIdx = gorunen.findIndex(s => s.strike < spot);
+  const spotIdx = vis.findIndex(s => s.strike < spot);
 
   return (
     <div className="ladder">
       <div className="ladder-header">
         <div>Etiket</div>
-        <div>AP %</div>
-        <div style={{ textAlign: "right", paddingRight: 14 }}>Sat γ</div>
-        <div>Kullanım</div>
-        <div style={{ paddingLeft: 14 }}>Al γ</div>
+        <div>OI %</div>
+        <div style={{ textAlign: "right", paddingRight: 14 }}>Put γ</div>
+        <div>Strike</div>
+        <div style={{ paddingLeft: 14 }}>Call γ</div>
         <div>Net γ</div>
         <div>Δ%</div>
       </div>
 
-      {gorunen.map((s, i) => {
-        const etiket   = etiketBul(s.strike);
-        const callPct  = s.callGex / maxCall * 100;
-        const putPct   = Math.abs(s.putGex) / maxPut * 100;
-        const uzaklik  = (s.strike - spot) / spot * 100;
+      {vis.map((s, i) => {
+        const tag     = tagFor(s.strike);
+        const callPct = s.callGex / maxCall * 100;
+        const putPct  = Math.abs(s.putGex) / maxPut * 100;
+        const dist    = (s.strike - spot) / spot * 100;
 
         return (
           <Fragment key={s.strike}>
             {i === spotIdx && (
               <div className="ladder-row spot">
                 <div className="tag" style={{ color: "var(--accent)" }}>◆</div>
-                <div />
-                <div className="bar-cell put" />
+                <div /><div className="bar-cell put" />
                 <div className="strike-cell tabular" style={{ color: "var(--accent)", fontWeight: 600 }}>{fmt(spot)}</div>
                 <div className="bar-cell call" />
                 <div className="net" style={{ color: "var(--accent)" }}>—</div>
@@ -219,7 +218,7 @@ function StrikeMerdiveni({ data }) {
               </div>
             )}
             <div className="ladder-row">
-              <div className={`tag ${etiket?.cls || ""}`}>{etiket?.txt || ""}</div>
+              <div className={`tag ${tag?.cls || ""}`}>{tag?.txt || ""}</div>
               <div style={{ color: "var(--text-dim)", textAlign: "center", fontSize: 10 }}>{s.oiPct}%</div>
               <div className="bar-cell put">
                 <div className="bar put" style={{ width: `${putPct}%` }} />
@@ -231,8 +230,8 @@ function StrikeMerdiveni({ data }) {
               <div className="net tabular" style={{ color: s.netGex >= 0 ? "var(--pos)" : "var(--neg)" }}>
                 {s.netGex >= 0 ? "+" : "−"}{fmtB(Math.abs(s.netGex))}
               </div>
-              <div className={`dist tabular ${uzaklik >= 0 ? "pos" : "neg"}`}>
-                {uzaklik >= 0 ? "+" : ""}{uzaklik.toFixed(1)}%
+              <div className={`dist tabular ${dist >= 0 ? "pos" : "neg"}`}>
+                {dist >= 0 ? "+" : ""}{dist.toFixed(1)}%
               </div>
             </div>
           </Fragment>
@@ -242,21 +241,21 @@ function StrikeMerdiveni({ data }) {
   );
 }
 
-// ─── KİLİT SEVİYELER PANELİ ──────────────────────────────
-function SeviyePaneli({ data }) {
+// ─── KEY LEVELS PANELİ ────────────────────────────────────
+function KeyLevels({ data }) {
   const { levels, spot } = data;
   const liste = [
-    { isim: "Alım Duvarı",      aciklama: "Maks. pozitif γ",    deger: levels.callWall,  renk: "var(--pos)",      pct: levels.callWallPct },
-    { isim: "Beklenen Hareket ↑", aciklama: "1σ hafta sonu",    deger: levels.emHigh,    renk: "var(--neutral)",  pct: levels.emHighPct },
-    { isim: "Maks. Acı",        aciklama: "Min. yazar ödeme",   deger: levels.maxPain,   renk: "var(--accent)",   pct: levels.maxPainPct },
-    { isim: "Sıfır Gamma",      aciklama: "Rejim dönüşümü",     deger: levels.zeroGamma, renk: "var(--text-dim)", pct: levels.zeroGammaPct },
-    { isim: "Beklenen Hareket ↓", aciklama: "1σ hafta sonu",    deger: levels.emLow,     renk: "var(--neutral)",  pct: levels.emLowPct },
-    { isim: "Satım Duvarı",     aciklama: "Maks. negatif γ",    deger: levels.putWall,   renk: "var(--neg)",      pct: levels.putWallPct },
+    { isim: "Call Wall",    aciklama: "Max positive γ",  deger: levels.callWall,  renk: "var(--pos)",      pct: levels.callWallPct },
+    { isim: "Expected Move ↑", aciklama: "1σ end-of-week", deger: levels.emHigh,  renk: "var(--neutral)",  pct: levels.emHighPct },
+    { isim: "Max Pain",     aciklama: "Min writer payoff", deger: levels.maxPain,  renk: "var(--accent)",   pct: levels.maxPainPct },
+    { isim: "Zero Gamma",   aciklama: "Regime flip",      deger: levels.zeroGamma,renk: "var(--text-dim)", pct: levels.zeroGammaPct },
+    { isim: "Expected Move ↓", aciklama: "1σ end-of-week", deger: levels.emLow,   renk: "var(--neutral)",  pct: levels.emLowPct },
+    { isim: "Put Wall",     aciklama: "Max negative γ",   deger: levels.putWall,  renk: "var(--neg)",      pct: levels.putWallPct },
   ];
   return (
     <div className="sheet">
       <div className="sheet-block" style={{ borderTop: "none", paddingTop: 0 }}>
-        <div className="sheet-label">Kilit Seviyeler</div>
+        <div className="sheet-label">Key Levels</div>
         <div className="levels-list">
           {liste.map(l => {
             const p = l.pct != null ? parseFloat(l.pct) : null;
@@ -280,35 +279,32 @@ function SeviyePaneli({ data }) {
   );
 }
 
-// ─── KUANTUM DUVARLAR ─────────────────────────────────────
-function KuantumDuvarlar({ data }) {
+// ─── QUANTUM WALLS ────────────────────────────────────────
+function QuantumWalls({ data }) {
   const { classified, spot, levels } = data;
-  const [ipucu, setIpucu]   = useState(null);
-  const [ipucuPos, setIpucuPos] = useState({ x: 0, y: 0 });
-  const [hover, setHover]   = useState(null);
+  const [ipucu, setIpucu] = useState(null);
+  const [hover, setHover] = useState(null);
   const svgRef = useRef(null);
 
   const lo = spot * 0.80, hi = spot * 1.22;
-  const gorunen = classified.filter(s => s.strike >= lo && s.strike <= hi);
+  const vis = classified.filter(s => s.strike >= lo && s.strike <= hi);
 
-  if (!gorunen.length) {
-    return (
-      <div style={{ color: "var(--text-mute)", fontFamily: "var(--mono)", fontSize: 11, padding: "20px 0" }}>
-        Veri yükleniyor...
-      </div>
-    );
-  }
+  if (!vis.length) return (
+    <div style={{ color: "var(--text-mute)", fontFamily: "var(--mono)", fontSize: 11, padding: "20px 0" }}>
+      Veri yükleniyor...
+    </div>
+  );
 
   const W = 1400, H = 720;
   const pad = { top: 44, right: 56, bottom: 52, left: 112 };
   const cW  = W - pad.left - pad.right;
   const cH  = H - pad.top - pad.bottom;
   const yS  = (p) => pad.top + ((hi - p) / (hi - lo)) * cH;
-  const maxBar = Math.max(...gorunen.map(s => Math.max(s.callGex, Math.abs(s.putGex))), 1);
-  const rowH   = Math.max(cH / gorunen.length - 1, 2.5);
+  const maxBar = Math.max(...vis.map(s => Math.max(s.callGex, Math.abs(s.putGex))), 1);
+  const rowH   = Math.max(cH / vis.length - 1, 2.5);
   const xBar   = (mag) => (mag / maxBar) * cW * 0.92;
 
-  const topDuvarlar = [...gorunen]
+  const topWalls = [...vis]
     .filter(s => s.isMajor)
     .sort((a, b) => Math.abs(b.netGex) - Math.abs(a.netGex))
     .slice(0, 8);
@@ -316,63 +312,50 @@ function KuantumDuvarlar({ data }) {
   const handleFare = (e) => {
     const rect = svgRef.current?.getBoundingClientRect();
     if (!rect) return;
-    const olcekY = H / rect.height;
-    const sy     = (e.clientY - rect.top) * olcekY;
-    const fiyat  = hi - ((sy - pad.top) / cH) * (hi - lo);
-    let en_iyi = null, enDusukF = Infinity;
-    for (const s of gorunen) {
+    const sy    = (e.clientY - rect.top) * (H / rect.height);
+    const fiyat = hi - ((sy - pad.top) / cH) * (hi - lo);
+    let best = null, bestD = Infinity;
+    for (const s of vis) {
       const d = Math.abs(s.strike - fiyat);
-      if (d < enDusukF) { enDusukF = d; en_iyi = s; }
+      if (d < bestD) { bestD = d; best = s; }
     }
-    if (en_iyi && enDusukF < (hi - lo) * 0.025) {
-      setIpucu(en_iyi);
-      setHover(en_iyi.strike);
-      setIpucuPos({ x: e.clientX, y: e.clientY });
-    } else {
-      setIpucu(null);
-      setHover(null);
-    }
+    if (best && bestD < (hi - lo) * 0.025) { setIpucu(best); setHover(best.strike); }
+    else { setIpucu(null); setHover(null); }
   };
 
   const seviyeRozeti = [
-    { p: levels.callWall,  l: "AW",  c: "var(--pos)" },
-    { p: levels.emHigh,    l: "BH↑", c: "var(--neutral)" },
-    { p: levels.zeroGamma, l: "SΓ",  c: "var(--text-dim)" },
-    { p: levels.maxPain,   l: "MA",  c: "var(--accent)" },
-    { p: levels.emLow,     l: "BH↓", c: "var(--neutral)" },
-    { p: levels.putWall,   l: "SW",  c: "var(--neg)" },
+    { p: levels.callWall,  l: "CW",  c: "var(--pos)" },
+    { p: levels.emHigh,    l: "EM↑", c: "var(--neutral)" },
+    { p: levels.zeroGamma, l: "ZΓ",  c: "var(--text-dim)" },
+    { p: levels.maxPain,   l: "MP",  c: "var(--accent)" },
+    { p: levels.emLow,     l: "EM↓", c: "var(--neutral)" },
+    { p: levels.putWall,   l: "PW",  c: "var(--neg)" },
   ].filter(x => x.p && x.p >= lo && x.p <= hi);
 
-  const alimDuvariSayisi = gorunen.filter(s => s.wallType === "callWall").length;
-  const mıknatısSayisi   = gorunen.filter(s => s.wallType === "magnet").length;
+  const callWallsCount = vis.filter(s => s.wallType === "callWall").length;
+  const magnetsCount   = vis.filter(s => s.wallType === "magnet").length;
 
   return (
     <div style={{ display: "grid", gridTemplateColumns: "1fr 290px", gap: 32 }}>
-      {/* Grafik tarafı */}
       <div>
         <div style={{ display: "flex", justifyContent: "space-between", fontFamily: "var(--mono)", fontSize: 10, color: "var(--text-mute)", marginBottom: 10 }}>
-          <span>|GAMMA MARUZIYETI| · USD</span>
-          <span>{alimDuvariSayisi} DUVAR · {mıknatısSayisi} MIKNATIK</span>
+          <span>|GAMMA EXPOSURE| · USD</span>
+          <span>{callWallsCount} WALLS · {magnetsCount} MAGNETS</span>
         </div>
 
         <div style={{ position: "relative" }} onMouseLeave={() => { setIpucu(null); setHover(null); }}>
-          <svg
-            ref={svgRef}
-            viewBox={`0 0 ${W} ${H}`}
-            style={{ width: "100%", height: "auto", display: "block" }}
-            onMouseMove={handleFare}
-          >
+          <svg ref={svgRef} viewBox={`0 0 ${W} ${H}`} style={{ width: "100%", height: "auto", display: "block" }} onMouseMove={handleFare}>
             <defs>
               <linearGradient id="qcg" x1="0" x2="1">
-                <stop offset="0%"   stopColor="var(--pos)" stopOpacity="0.92" />
+                <stop offset="0%" stopColor="var(--pos)" stopOpacity="0.92" />
                 <stop offset="100%" stopColor="var(--pos)" stopOpacity="0.18" />
               </linearGradient>
               <linearGradient id="qpg" x1="0" x2="1">
-                <stop offset="0%"   stopColor="var(--neg)" stopOpacity="0.88" />
+                <stop offset="0%" stopColor="var(--neg)" stopOpacity="0.88" />
                 <stop offset="100%" stopColor="var(--neg)" stopOpacity="0.14" />
               </linearGradient>
               <linearGradient id="qmg" x1="0" x2="1">
-                <stop offset="0%"   stopColor="var(--neutral)" stopOpacity="0.38" />
+                <stop offset="0%" stopColor="var(--neutral)" stopOpacity="0.38" />
                 <stop offset="100%" stopColor="var(--neutral)" stopOpacity="0.03" />
               </linearGradient>
               <filter id="pırıltı">
@@ -381,67 +364,46 @@ function KuantumDuvarlar({ data }) {
               </filter>
             </defs>
 
-            {/* Fiyat ızgarası + etiketler */}
-            {gorunen.map(s => {
+            {vis.map(s => {
               const y = yS(s.strike);
               return (
-                <g key={`izgara-${s.strike}`}>
-                  <line x1={pad.left} x2={W - pad.right} y1={y} y2={y}
-                    stroke="var(--hairline-soft)" strokeWidth="0.3" />
-                  <text x={pad.left - 6} y={y + 3} textAnchor="end"
-                    fontFamily="var(--mono)" fontSize="10" fill="var(--text-mute)">
-                    {(s.strike / 1000).toFixed(0)}B
+                <g key={`iz-${s.strike}`}>
+                  <line x1={pad.left} x2={W - pad.right} y1={y} y2={y} stroke="var(--hairline-soft)" strokeWidth="0.3" />
+                  <text x={pad.left - 6} y={y + 3} textAnchor="end" fontFamily="var(--mono)" fontSize="10" fill="var(--text-mute)">
+                    {(s.strike / 1000).toFixed(0)}K
                   </text>
                 </g>
               );
             })}
 
-            {/* Barlar */}
-            {gorunen.map(s => {
+            {vis.map(s => {
               const y      = yS(s.strike);
               const callW  = xBar(s.callGex);
               const putW   = xBar(Math.abs(s.putGex));
-              const toplamW = Math.max(callW, putW);
-              const lRenk  = s.wallType === "callWall" ? "var(--pos)" :
-                             s.wallType === "putWall"  ? "var(--neg)" : "var(--neutral)";
-              const lTur   = s.wallType === "callWall" ? "ALIM DUVARI" :
-                             s.wallType === "putWall"  ? "SATIM DUVARI" :
-                             s.wallType === "magnet"   ? "MIKNATIK"     : null;
-              const etiketGoster = s.isMajor && rowH >= 3 && toplamW > 140;
+              const totalW = Math.max(callW, putW);
+              const lRenk  = s.wallType === "callWall" ? "var(--pos)" : s.wallType === "putWall" ? "var(--neg)" : "var(--neutral)";
+              const lTur   = s.wallType === "callWall" ? "CALL WALL" : s.wallType === "putWall" ? "PUT WALL" : s.wallType === "magnet" ? "MAGNET" : null;
+              const etiketGoster = s.isMajor && rowH >= 3 && totalW > 140;
 
               return (
                 <g key={`bar-${s.strike}`}>
-                  {/* Hover vurgusu */}
                   {hover === s.strike && (
-                    <rect
-                      x={pad.left - 8} y={y - rowH / 2 - 1}
-                      width={W - pad.left - pad.right + 12} height={rowH + 2}
-                      fill="rgba(255,255,255,0.04)"
-                    />
+                    <rect x={pad.left - 8} y={y - rowH / 2 - 1} width={W - pad.left - pad.right + 12} height={rowH + 2} fill="rgba(255,255,255,0.04)" />
                   )}
-                  {/* Mıknatıs hâlesi */}
                   {s.wallType === "magnet" && s.isSignificant && (
-                    <rect x={pad.left} y={y - rowH / 2} width={toplamW} height={rowH} fill="url(#qmg)" />
+                    <rect x={pad.left} y={y - rowH / 2} width={totalW} height={rowH} fill="url(#qmg)" />
                   )}
-                  {/* Alım barı */}
                   {s.callGex > 0 && (
                     <rect x={pad.left} y={y - rowH / 2} width={callW} height={rowH} fill="url(#qcg)" />
                   )}
-                  {/* Satım barı */}
                   {s.putGex < 0 && (
                     <rect x={pad.left} y={y - rowH / 2} width={putW} height={rowH} fill="url(#qpg)" opacity="0.85" />
                   )}
-                  {/* Duvar etiketi */}
                   {etiketGoster && lTur && (
                     <g>
-                      <line x1={pad.left + toplamW + 5} x2={W - pad.right} y1={y} y2={y}
-                        stroke={lRenk} strokeWidth="0.8" strokeDasharray="4 3" opacity="0.28" />
-                      <text
-                        x={pad.left + toplamW / 2} y={y + 3.5}
-                        textAnchor="middle" fontFamily="var(--mono)"
-                        fontSize="9" fontWeight="600" fill={lRenk}
-                      >
-                        {`▸ ${lTur}  ${fmtB(Math.abs(s.netGex))}  AP ${s.oiPct}%`}
+                      <line x1={pad.left + totalW + 5} x2={W - pad.right} y1={y} y2={y} stroke={lRenk} strokeWidth="0.8" strokeDasharray="4 3" opacity="0.28" />
+                      <text x={pad.left + totalW / 2} y={y + 3.5} textAnchor="middle" fontFamily="var(--mono)" fontSize="9" fontWeight="600" fill={lRenk}>
+                        {`▸ ${lTur}  ${fmtB(Math.abs(s.netGex))}  OI ${s.oiPct}%`}
                       </text>
                     </g>
                   )}
@@ -449,70 +411,50 @@ function KuantumDuvarlar({ data }) {
               );
             })}
 
-            {/* Seviye rozetleri */}
             {seviyeRozeti.map((it, i) => {
               const y = yS(it.p);
               if (y < pad.top - 10 || y > H - pad.bottom + 10) return null;
               return (
                 <g key={`lvl-${i}`}>
-                  <line x1={pad.left} x2={W - pad.right} y1={y} y2={y}
-                    stroke={it.c} strokeWidth="0.7" strokeDasharray="3 5" opacity="0.25" />
-                  <rect x={pad.left - 56} y={y - 9} width="48" height="18" rx="3"
-                    fill="var(--surface)" stroke={it.c} strokeWidth="1" />
-                  <text x={pad.left - 32} y={y + 4} textAnchor="middle"
-                    fontFamily="var(--mono)" fontSize="9" fontWeight="700" fill={it.c}>
-                    {it.l}
-                  </text>
+                  <line x1={pad.left} x2={W - pad.right} y1={y} y2={y} stroke={it.c} strokeWidth="0.7" strokeDasharray="3 5" opacity="0.25" />
+                  <rect x={pad.left - 56} y={y - 9} width="48" height="18" rx="3" fill="var(--surface)" stroke={it.c} strokeWidth="1" />
+                  <text x={pad.left - 32} y={y + 4} textAnchor="middle" fontFamily="var(--mono)" fontSize="9" fontWeight="700" fill={it.c}>{it.l}</text>
                 </g>
               );
             })}
 
-            {/* SPOT çizgisi */}
             {(() => {
               const y = yS(spot);
               if (y < pad.top || y > H - pad.bottom) return null;
               return (
                 <g>
-                  <line x1={pad.left} x2={W - pad.right} y1={y} y2={y}
-                    stroke="var(--accent)" strokeWidth="1.8" opacity="0.9" filter="url(#pırıltı)" />
+                  <line x1={pad.left} x2={W - pad.right} y1={y} y2={y} stroke="var(--accent)" strokeWidth="1.8" opacity="0.9" filter="url(#pırıltı)" />
                   <rect x={pad.left - 56} y={y - 10} width="48" height="20" rx="3" fill="var(--accent)" />
-                  <text x={pad.left - 32} y={y + 5} textAnchor="middle"
-                    fontFamily="var(--mono)" fontSize="10" fontWeight="700" fill="#0a0a0a">
-                    SPOT
-                  </text>
+                  <text x={pad.left - 32} y={y + 5} textAnchor="middle" fontFamily="var(--mono)" fontSize="10" fontWeight="700" fill="#0a0a0a">SPOT</text>
                 </g>
               );
             })()}
 
-            {/* X ekseni */}
             <line x1={pad.left} x2={W - pad.right} y1={H - pad.bottom} y2={H - pad.bottom} stroke="var(--hairline)" />
             {[0, 0.25, 0.5, 0.75, 1].map(p => {
-              const x = pad.left + p * cW * 0.92;
-              const v = p * maxBar;
+              const x = pad.left + p * cW * 0.92, v = p * maxBar;
               return (
                 <g key={`xek-${p}`}>
                   <line x1={x} x2={x} y1={H - pad.bottom} y2={H - pad.bottom + 4} stroke="var(--hairline)" />
-                  <text x={x} y={H - pad.bottom + 16} textAnchor="middle"
-                    fontFamily="var(--mono)" fontSize="9" fill="var(--text-mute)">
-                    ${fmtB(v)}
-                  </text>
+                  <text x={x} y={H - pad.bottom + 16} textAnchor="middle" fontFamily="var(--mono)" fontSize="9" fill="var(--text-mute)">${fmtB(v)}</text>
                 </g>
               );
             })}
-            <text x={(pad.left + W - pad.right) / 2} y={H - pad.bottom + 34}
-              textAnchor="middle" fontFamily="var(--mono)" fontSize="9" fill="var(--text-mute)">
-              |Gamma Maruziyeti| · $
-            </text>
+            <text x={(pad.left + W - pad.right) / 2} y={H - pad.bottom + 34} textAnchor="middle" fontFamily="var(--mono)" fontSize="9" fill="var(--text-mute)">|Gamma Exposure| · $</text>
           </svg>
 
-          {/* İpucu — sağ üstte sabit tablo */}
+          {/* Tooltip — sağ üstte sabit */}
           {ipucu && (() => {
-            const duvarEtiketi =
-              ipucu.wallType === "callWall" ? { txt: "ALIM DUVARI", renk: "var(--pos)" } :
-              ipucu.wallType === "putWall"  ? { txt: "SATIM DUVARI", renk: "var(--neg)" } :
-              ipucu.wallType === "magnet"   ? { txt: "MIKNATIK",    renk: "var(--neutral)" } :
-              { txt: "NÖTR", renk: "var(--text-dim)" };
-
+            const wallLabel =
+              ipucu.wallType === "callWall" ? { txt: "CALL WALL", renk: "var(--pos)" } :
+              ipucu.wallType === "putWall"  ? { txt: "PUT WALL",  renk: "var(--neg)" } :
+              ipucu.wallType === "magnet"   ? { txt: "MAGNET",    renk: "var(--neutral)" } :
+              { txt: "NEUTRAL", renk: "var(--text-dim)" };
             return (
               <div style={{
                 position: "absolute", top: 8, right: 8,
@@ -520,31 +462,20 @@ function KuantumDuvarlar({ data }) {
                 borderRadius: 4, fontFamily: "var(--mono)", fontSize: 11,
                 pointerEvents: "none", zIndex: 100, minWidth: 200, overflow: "hidden",
               }}>
-                <div style={{
-                  display: "flex", justifyContent: "space-between", alignItems: "center",
-                  padding: "8px 12px", borderBottom: "1px solid var(--hairline)",
-                  background: "var(--surface-2)",
-                }}>
-                  <span style={{ fontSize: 14, fontWeight: 700, color: "var(--text)", letterSpacing: "-0.01em" }}>
-                    ${fmt(ipucu.strike)}
-                  </span>
-                  <span style={{ fontSize: 9, fontWeight: 700, letterSpacing: "0.1em", color: duvarEtiketi.renk, textTransform: "uppercase" }}>
-                    {duvarEtiketi.txt}
-                  </span>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 12px", borderBottom: "1px solid var(--hairline)", background: "var(--surface-2)" }}>
+                  <span style={{ fontSize: 14, fontWeight: 700, color: "var(--text)" }}>${fmt(ipucu.strike)}</span>
+                  <span style={{ fontSize: 9, fontWeight: 700, letterSpacing: "0.1em", color: wallLabel.renk }}>{wallLabel.txt}</span>
                 </div>
                 {[
-                  ["Net γ",      (ipucu.netGex >= 0 ? "+" : "") + "$" + fmtB(ipucu.netGex),   ipucu.netGex >= 0 ? "var(--pos)" : "var(--neg)"],
-                  ["Alım γ",     "$" + fmtB(ipucu.callGex),                                    "var(--pos)"],
-                  ["Satım γ",    "$" + fmtB(Math.abs(ipucu.putGex)),                           "var(--neg)"],
-                  ["AP yoğunluğu", ipucu.oiPct + "%",                                          "var(--text)"],
-                  ["γ yoğunluğu",  ipucu.gexPct + "%",                                         "var(--text)"],
-                ].map(([etiket, deger, renk]) => (
-                  <div key={etiket} style={{
-                    display: "flex", justifyContent: "space-between", alignItems: "baseline",
-                    padding: "5px 12px", borderBottom: "1px solid var(--hairline-soft)",
-                  }}>
-                    <span style={{ color: "var(--text-dim)", fontSize: 10, letterSpacing: "0.04em" }}>{etiket}</span>
-                    <span style={{ color: renk, fontWeight: 600, fontSize: 11 }}>{deger}</span>
+                  ["Net GEX",   (ipucu.netGex >= 0 ? "+" : "") + "$" + fmtB(ipucu.netGex),  ipucu.netGex >= 0 ? "var(--pos)" : "var(--neg)"],
+                  ["Call GEX",  "$" + fmtB(ipucu.callGex),  "var(--pos)"],
+                  ["Put GEX",   "$" + fmtB(Math.abs(ipucu.putGex)), "var(--neg)"],
+                  ["OI density", ipucu.oiPct + "%", "var(--text)"],
+                  ["γ density",  ipucu.gexPct + "%", "var(--text)"],
+                ].map(([e, d, r]) => (
+                  <div key={e} style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", padding: "5px 12px", borderBottom: "1px solid var(--hairline-soft)" }}>
+                    <span style={{ color: "var(--text-dim)", fontSize: 10 }}>{e}</span>
+                    <span style={{ color: r, fontWeight: 600 }}>{d}</span>
                   </div>
                 ))}
               </div>
@@ -553,43 +484,30 @@ function KuantumDuvarlar({ data }) {
         </div>
       </div>
 
-      {/* Top Duvarlar listesi */}
+      {/* Top Walls listesi */}
       <div>
         <p style={{ fontFamily: "var(--serif)", fontSize: 16, lineHeight: 1.45, color: "var(--text-2)", marginBottom: 22 }}>
-          İki <em style={{ fontStyle: "italic", color: "var(--accent)" }}>$5B-bant</em> spot'u çerçeveler: yukarıda alım duvarı kümesi, aşağıda satım duvarı yığını. Aralarında dealer hedging gerçekleşen oynaklığı <em style={{ fontStyle: "italic", color: "var(--accent)" }}>bastırır</em>.
+          İki <em style={{ fontStyle: "italic", color: "var(--accent)" }}>$5K-bant</em> spot'u çerçeveler: yukarıda Call Wall kümesi, aşağıda Put Wall yığını. Aralarında dealer hedging gerçekleşen volatiliteyi <em style={{ fontStyle: "italic", color: "var(--accent)" }}>bastırır</em>.
         </p>
         <div style={{ fontFamily: "var(--mono)", fontSize: 9, color: "var(--text-mute)", letterSpacing: "0.14em", textTransform: "uppercase", marginBottom: 14 }}>
-          Önemli Duvarlar — Sıralı ↓
+          Top Walls — Sıralı ↓
         </div>
-        {topDuvarlar.map((w, i) => {
+        {topWalls.map((w, i) => {
           const alim = w.wallType === "callWall", satim = w.wallType === "putWall";
           const renk = alim ? "var(--pos)" : satim ? "var(--neg)" : "var(--neutral)";
           const pct  = ((w.strike - spot) / spot * 100);
           return (
-            <div key={w.strike} style={{
-              display: "grid", gridTemplateColumns: "22px 1fr auto",
-              gap: "6px 10px", alignItems: "baseline",
-              padding: "10px 0", borderBottom: "1px solid var(--hairline-soft)",
-              fontFamily: "var(--mono)",
-            }}>
-              <span style={{ fontSize: 9, color: "var(--text-mute)", fontStyle: "italic" }}>
-                {String(i + 1).padStart(2, "0")}
-              </span>
+            <div key={w.strike} style={{ display: "grid", gridTemplateColumns: "22px 1fr auto", gap: "6px 10px", alignItems: "baseline", padding: "10px 0", borderBottom: "1px solid var(--hairline-soft)", fontFamily: "var(--mono)" }}>
+              <span style={{ fontSize: 9, color: "var(--text-mute)", fontStyle: "italic" }}>{String(i + 1).padStart(2, "0")}</span>
               <div>
-                <div style={{ fontSize: 14, color: renk, fontWeight: 600, fontFamily: "var(--serif)" }}>
-                  ${fmt(w.strike)}
-                </div>
+                <div style={{ fontSize: 14, color: renk, fontWeight: 600, fontFamily: "var(--serif)" }}>${fmt(w.strike)}</div>
                 <div style={{ fontSize: 9, color: renk, marginTop: 2 }}>
-                  {alim ? "Alım" : satim ? "Satım" : "Mıknatık"} · AP {w.oiPct}%
+                  {alim ? "Call" : satim ? "Put" : "Magnet"} · OI {w.oiPct}%
                 </div>
               </div>
               <div style={{ textAlign: "right" }}>
-                <div style={{ fontSize: 12, color: pct >= 0 ? "var(--pos)" : "var(--neg)", fontFamily: "var(--serif)" }}>
-                  {pct >= 0 ? "+" : ""}{pct.toFixed(1)}%
-                </div>
-                <div style={{ fontSize: 10, color: "var(--text-mute)", marginTop: 2 }}>
-                  {pct >= 0 ? "+" : "-"}${fmtB(Math.abs(w.netGex))}
-                </div>
+                <div style={{ fontSize: 12, color: pct >= 0 ? "var(--pos)" : "var(--neg)", fontFamily: "var(--serif)" }}>{pct >= 0 ? "+" : ""}{pct.toFixed(1)}%</div>
+                <div style={{ fontSize: 10, color: "var(--text-mute)", marginTop: 2 }}>{pct >= 0 ? "+" : "-"}${fmtB(Math.abs(w.netGex))}</div>
               </div>
             </div>
           );
@@ -599,8 +517,8 @@ function KuantumDuvarlar({ data }) {
   );
 }
 
-// ─── TOPLU GREEK'LER ──────────────────────────────────────
-function TopluGreekler({ data }) {
+// ─── AGGREGATE GREEKS ─────────────────────────────────────
+function AggregateGreeks({ data }) {
   const { totals } = data;
   return (
     <div className="greeks-stack">
@@ -609,19 +527,19 @@ function TopluGreekler({ data }) {
           simge: "Γ", etiket: "Net Gamma",
           deger: `${totals.gamma >= 0 ? "+" : "−"}${fmtB(Math.abs(totals.gamma))}`,
           renk: totals.gamma >= 0 ? "var(--pos)" : "var(--neg)",
-          aciklama: `Piyasa yapıcılar gamma <b>${totals.gamma >= 0 ? "uzunu" : "kısası"}</b>. Zımni oynaklık vadeye kadar <b>${totals.gamma >= 0 ? "baskılanır" : "yükselir"}</b>.`,
+          aciklama: `Dealer'lar gamma <b>${totals.gamma >= 0 ? "uzunu" : "kısası"}</b>. Implied vol vadeye kadar <b>${totals.gamma >= 0 ? "baskılanır" : "yükselir"}</b>.`,
         },
         {
           simge: "𝒱", etiket: "Net Vanna",
           deger: `${totals.vanna >= 0 ? "+" : "−"}${fmtB(Math.abs(totals.vanna))}`,
           renk: totals.vanna >= 0 ? "var(--pos)" : "var(--neg)",
-          aciklama: `∂Δ/∂σ. IV yükselince dealer deltası <b>${totals.vanna >= 0 ? "spotla birlikte" : "spota karşı"}</b> hareket eder.`,
+          aciklama: `∂Δ/∂σ. IV yükselince dealer delta <b>${totals.vanna >= 0 ? "spot ile birlikte" : "spot'a karşı"}</b> hareket eder.`,
         },
         {
           simge: "𝒞", etiket: "Net Charm",
           deger: `−${fmtB(Math.abs(totals.charm))}`,
           renk: "var(--neg)",
-          aciklama: "∂Δ/∂t. Vadeye yaklaştıkça sabitleme etkisi güçlenir; <b>AP akışı</b> spot'tan daha önemlidir.",
+          aciklama: "∂Δ/∂t. Pin etkisi vadeye yaklaştıkça güçlenir; intraday <b>OI flow</b> spot'tan daha önemlidir.",
         },
       ].map(c => (
         <div key={c.etiket} className="greek-cell">
@@ -637,32 +555,27 @@ function TopluGreekler({ data }) {
   );
 }
 
-// ─── ATM VADE YAPISI (calcVolSurface'den) ─────────────────
-function VadeYapisi({ data }) {
-  // calcVolSurface log-moneyness interpolasyonunu kullanır
+// ─── ATM TERM STRUCTURE ───────────────────────────────────
+function TermStructure({ data }) {
   const noktalar = (data.volSurface?.termStructure || [])
     .filter(p => p.days > 0 && p.iv > 5 && p.iv < 200)
     .sort((a, b) => a.days - b.days);
 
   if (noktalar.length < 2) return (
     <div style={{ color: "var(--text-mute)", fontFamily: "var(--mono)", fontSize: 10, padding: "20px 0" }}>
-      Vade yapısı hesaplanıyor...
+      Term structure hesaplanıyor...
     </div>
   );
 
   const W = 560, H = 220, pad = { top: 18, right: 20, bottom: 30, left: 40 };
-  const maxGun = Math.max(...noktalar.map(p => p.days));
-  const minIV  = Math.floor(Math.min(...noktalar.map(p => p.iv)) / 5) * 5 - 5;
-  const maxIV  = Math.ceil(Math.max(...noktalar.map(p => p.iv)) / 5) * 5 + 5;
-  const xS = g => pad.left + (g / maxGun) * (W - pad.left - pad.right);
+  const maxDays = Math.max(...noktalar.map(p => p.days));
+  const minIV   = Math.floor(Math.min(...noktalar.map(p => p.iv)) / 5) * 5 - 5;
+  const maxIV   = Math.ceil(Math.max(...noktalar.map(p => p.iv)) / 5) * 5 + 5;
+  const xS = g => pad.left + (g / maxDays) * (W - pad.left - pad.right);
   const yS = iv => pad.top + ((maxIV - iv) / (maxIV - minIV)) * (H - pad.top - pad.bottom);
   const yol = noktalar.map((p, i) => `${i === 0 ? "M" : "L"} ${xS(p.days)} ${yS(p.iv)}`).join(" ");
-
-  // Y ekseni için güzel sayılar
   const ivTicks = [];
-  for (let iv = Math.ceil(minIV / 10) * 10; iv <= maxIV; iv += 10) {
-    if (iv >= minIV && iv <= maxIV) ivTicks.push(iv);
-  }
+  for (let iv = Math.ceil(minIV / 10) * 10; iv <= maxIV; iv += 10) ivTicks.push(iv);
 
   return (
     <svg viewBox={`0 0 ${W} ${H}`} className="term-svg">
@@ -675,7 +588,7 @@ function VadeYapisi({ data }) {
           </g>
         );
       })}
-      {[7, 30, 90, 180, 240].filter(g => g <= maxGun).map(g => (
+      {[7, 30, 90, 180, 240].filter(g => g <= maxDays).map(g => (
         <g key={g}>
           <line x1={xS(g)} x2={xS(g)} y1={H - pad.bottom} y2={H - pad.bottom + 4} stroke="var(--hairline-strong)" />
           <text x={xS(g)} y={H - pad.bottom + 16} textAnchor="middle" fontFamily="var(--mono)" fontSize="9" fill="var(--text-mute)">{g}g</text>
@@ -686,10 +599,7 @@ function VadeYapisi({ data }) {
       {noktalar.map((p, i) => (
         <g key={i}>
           <circle cx={xS(p.days)} cy={yS(p.iv)} r="3" fill="var(--bg)" stroke="var(--accent)" strokeWidth="1.4" />
-          {/* Her noktaya label */}
-          <text x={xS(p.days)} y={yS(p.iv) - 9} textAnchor="middle" fontFamily="var(--mono)" fontSize="9" fill="var(--text-2)">
-            {p.iv.toFixed(0)}
-          </text>
+          <text x={xS(p.days)} y={yS(p.iv) - 9} textAnchor="middle" fontFamily="var(--mono)" fontSize="9" fill="var(--text-2)">{p.iv.toFixed(0)}</text>
         </g>
       ))}
       <text x={pad.left} y={12} fontFamily="var(--mono)" fontSize="9" fill="var(--text-mute)" letterSpacing="0.12em">ATM IV (%)</text>
@@ -697,33 +607,27 @@ function VadeYapisi({ data }) {
   );
 }
 
-// ─── 25Δ RİSK-REVERSAL ÇARPIKLIĞI (calcVolSurface'den) ────
-// RR(25Δ) = IV(25Δ put) - IV(25Δ call) [vol noktaları]
-// Pozitif → downside bias (put daha pahalı)
-function CarpiklıkGraf({ data }) {
-  const satirlar = (data.volSurface?.riskReversals || [])
+// ─── 25Δ RISK REVERSAL ────────────────────────────────────
+function RiskReversal({ data }) {
+  const rows = (data.volSurface?.riskReversals || [])
     .filter(r => Math.abs(r.rr) > 0 && Math.abs(r.rr) < 15)
     .sort((a, b) => a.days - b.days)
     .slice(0, 10);
 
-  // Gerçek veri yoksa — göster değil
-  if (!satirlar.length) return (
+  if (!rows.length) return (
     <div style={{ color: "var(--text-mute)", fontFamily: "var(--mono)", fontSize: 10, padding: "20px 0" }}>
-      25Δ çarpıklık hesaplanıyor...
+      25Δ Risk Reversal hesaplanıyor...
     </div>
   );
 
   const W = 560, H = 220, pad = { top: 22, right: 20, bottom: 30, left: 44 };
-  const maxG = Math.max(...satirlar.map(e => e.days));
-  const allRR = satirlar.map(e => e.rr);
-  const maxRR = Math.max(...allRR) + 1.5;
-  const minRR = Math.min(0, Math.min(...allRR) - 0.5);
-  const rangeRR = maxRR - minRR;
-  const xS = g => pad.left + (g / maxG) * (W - pad.left - pad.right);
-  const yS = rr => pad.top + ((maxRR - rr) / rangeRR) * (H - pad.top - pad.bottom);
-  const y0 = yS(0); // sıfır çizgisi
-
-  // Y eksen ticks
+  const maxG   = Math.max(...rows.map(e => e.days));
+  const maxRR  = Math.max(...rows.map(e => e.rr)) + 1.5;
+  const minRR  = Math.min(0, Math.min(...rows.map(e => e.rr)) - 0.5);
+  const range  = maxRR - minRR;
+  const xS = g  => pad.left + (g / maxG) * (W - pad.left - pad.right);
+  const yS = rr => pad.top + ((maxRR - rr) / range) * (H - pad.top - pad.bottom);
+  const y0 = yS(0);
   const rrTicks = [];
   for (let r = Math.floor(minRR / 2) * 2; r <= maxRR; r += 2) rrTicks.push(r);
 
@@ -742,12 +646,12 @@ function CarpiklıkGraf({ data }) {
           </g>
         );
       })}
-      {satirlar.map(e => {
-        const bW = Math.min(36, (W - pad.left - pad.right) / satirlar.length * 0.7);
-        const x = xS(e.days);
-        const y = e.rr >= 0 ? yS(e.rr) : y0;
+      {rows.map(e => {
+        const bW   = Math.min(36, (W - pad.left - pad.right) / rows.length * 0.7);
+        const x    = xS(e.days);
+        const y    = e.rr >= 0 ? yS(e.rr) : y0;
         const barH = Math.abs(yS(e.rr) - y0);
-        const renk = e.rr >= 0 ? "var(--neg)" : "var(--pos)"; // pozitif RR = put bias = bearish (kırmızı)
+        const renk = e.rr >= 0 ? "var(--neg)" : "var(--pos)";
         return (
           <g key={e.days}>
             <rect x={x - bW / 2} y={y} width={bW} height={barH || 1} fill={renk} opacity="0.55" />
@@ -764,7 +668,7 @@ function CarpiklıkGraf({ data }) {
         );
       })}
       <text x={pad.left} y={12} fontFamily="var(--mono)" fontSize="9" fill="var(--text-mute)" letterSpacing="0.10em">
-        25Δ SAT − 25Δ AL (vol noktası)
+        25Δ PUT − 25Δ CALL (vol puanı)
       </text>
     </svg>
   );
@@ -777,7 +681,7 @@ export default function AnaSayfa() {
 
   if (data.loading) return (
     <>
-      <Head><title>OPSİYON MASASI · BTC</title></Head>
+      <Head><title>Options Desk · BTC</title></Head>
       <div style={{ minHeight: "100vh", display: "grid", placeItems: "center", background: "#0c0c0d", color: "#4a4742", fontFamily: "JetBrains Mono, monospace", fontSize: 11, letterSpacing: "0.12em" }}>
         <div style={{ textAlign: "center" }}>
           <div style={{ width: 36, height: 36, border: "1.5px solid #36363c", borderTopColor: "#c4a574", borderRadius: "50%", animation: "spin 0.9s linear infinite", margin: "0 auto 16px" }} />
@@ -790,7 +694,7 @@ export default function AnaSayfa() {
 
   if (data.error) return (
     <>
-      <Head><title>OPSİYON MASASI · BTC</title></Head>
+      <Head><title>Options Desk · BTC</title></Head>
       <div style={{ minHeight: "100vh", display: "grid", placeItems: "center", background: "#0c0c0d", color: "#b5564c", fontFamily: "monospace" }}>
         <div style={{ textAlign: "center" }}>
           <div style={{ marginBottom: 12 }}>❌ {data.error}</div>
@@ -804,21 +708,21 @@ export default function AnaSayfa() {
 
   const saatStr = data.lastUpdate?.toLocaleTimeString("tr-TR", { hour: "2-digit", minute: "2-digit", second: "2-digit" }) || "—";
   const pozitif = data.totals.gamma >= 0;
-  const aw = data.levels.callWall || 0;
-  const sw = data.levels.putWall  || 0;
+  const cw = data.levels.callWall || 0;
+  const pw = data.levels.putWall  || 0;
   const sp = data.spot || 1;
 
   return (
     <>
-      <Head><title>OPSİYON MASASI · BTC</title></Head>
+      <Head><title>Options Desk · BTC</title></Head>
       <div className="app">
         <KenarCubugu data={data} vade={vade} setVade={setVade} />
 
         <main className="main">
-          {/* Başlık çubuğu */}
+          {/* Başlık */}
           <div className="header">
             <div className="header-trail">
-              <span className="crumb">Masa</span><span className="sep">/</span>
+              <span className="crumb">Desk</span><span className="sep">/</span>
               <span className="crumb">Kripto Opsiyonları</span><span className="sep">/</span>
               <span className="crumb active">BTC · Gamma</span>
             </div>
@@ -832,108 +736,108 @@ export default function AnaSayfa() {
             </div>
           </div>
 
-          {/* i. Strike Topografyası */}
+          {/* i. Strike Topography */}
           <section className="section">
             <div className="section-head">
               <h2 className="section-title">
-                <span className="section-nbr">i.</span>Strike Topografyası
+                <span className="section-nbr">i.</span>Strike Topography
               </h2>
               <span className="section-meta">
-                {data.strikes.length} KULLANIM · {data.stats.expiries} VADE · {vade === "all" ? "TÜMÜ" : vade.toUpperCase()}
+                {data.strikes.length} STRIKE · {data.stats.expiries} VADE · {vade === "all" ? "TÜMÜ" : vade.toUpperCase()}
               </span>
             </div>
             <div className="ladder-wrap">
-              <StrikeMerdiveni data={data} />
-              <SeviyePaneli data={data} />
+              <StrikeLadder data={data} />
+              <KeyLevels data={data} />
             </div>
           </section>
 
-          {/* ii. Kuantum Duvarlar */}
+          {/* ii. Quantum Walls */}
           <section className="section">
             <div className="section-head">
               <h2 className="section-title">
-                <span className="section-nbr">ii.</span>Kuantum Duvarlar
+                <span className="section-nbr">ii.</span>Quantum Walls
               </h2>
               <span className="section-meta">
-                {data.classified.filter(c => c.wallType === "callWall").length} ALIM DUVARI ·{" "}
-                {data.classified.filter(c => c.wallType === "putWall").length} SATIM DUVARI ·{" "}
-                {data.classified.filter(c => c.wallType === "magnet").length} MIKNATIK
+                {data.classified.filter(c => c.wallType === "callWall").length} CALL WALLS ·{" "}
+                {data.classified.filter(c => c.wallType === "putWall").length} PUT WALLS ·{" "}
+                {data.classified.filter(c => c.wallType === "magnet").length} MAGNETS
               </span>
             </div>
-            <KuantumDuvarlar data={data} />
+            <QuantumWalls data={data} />
           </section>
 
-          {/* iii. Toplu Greek'ler */}
+          {/* iii. Aggregate Greeks */}
           <section className="section">
             <div className="section-head">
               <h2 className="section-title">
-                <span className="section-nbr">iii.</span>Toplu Greek'ler
+                <span className="section-nbr">iii.</span>Aggregate Greeks
               </h2>
-              <span className="section-meta">DEALER-NORMALIZE · USD CİNSİNDEN</span>
+              <span className="section-meta">DEALER-NORMALIZED · USD-DENOMINATED</span>
             </div>
-            <TopluGreekler data={data} />
+            <AggregateGreeks data={data} />
           </section>
 
-          {/* iv. Volatilite Yüzeyi */}
+          {/* iv. Volatility Surface */}
           <section className="section">
             <div className="section-head">
               <h2 className="section-title">
-                <span className="section-nbr">iv.</span>Volatilite Yüzeyi
+                <span className="section-nbr">iv.</span>Volatility Surface
               </h2>
-              <span className="section-meta">VADE YAPISI · ÇARPIKLIK</span>
+              <span className="section-meta">TERM STRUCTURE · RISK REVERSAL SKEW</span>
             </div>
             <div className="term-card">
               <div>
-                <div className="sheet-label" style={{ marginBottom: 12 }}>ATM Vade Yapısı</div>
-                <VadeYapisi data={data} />
+                <div className="sheet-label" style={{ marginBottom: 12 }}>ATM Term Structure</div>
+                <TermStructure data={data} />
                 <p style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--text-dim)", marginTop: 8, lineHeight: 1.55 }}>
                   {data.volSurface?.termStructure?.length > 0
-                    ? `Eğri ${data.volSurface.termStructure.length} vadeden hesaplandı. Kısa uç ~${data.dvol.toFixed(0)}% seviyesinde.`
-                    : "Vade yapısı log-moneyness interpolasyonuyla hesaplanıyor..."
+                    ? `${data.volSurface.termStructure.length} vade · Log-moneyness interpolasyonu · ATM IV ~${data.dvol.toFixed(0)}%`
+                    : "Hesaplanıyor..."
                   }
                 </p>
               </div>
               <div>
-                <div className="sheet-label" style={{ marginBottom: 12 }}>Risk-Reversal Çarpıklığı</div>
-                <CarpiklıkGraf data={data} />
+                <div className="sheet-label" style={{ marginBottom: 12 }}>25Δ Risk Reversal</div>
+                <RiskReversal data={data} />
                 <p style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--text-dim)", marginTop: 8, lineHeight: 1.55 }}>
                   {data.volSurface?.riskReversals?.length > 0
-                    ? `${data.volSurface.riskReversals.length} vade için hesaplandı. RR = IV(25Δ put) − IV(25Δ call)`
-                    : "25Δ risk-reversal hesaplanıyor..."
+                    ? `RR = IV(25Δ put) − IV(25Δ call) · ${data.volSurface.riskReversals.length} vade · Pozitif = put bias`
+                    : "Hesaplanıyor..."
                   }
                 </p>
               </div>
             </div>
           </section>
 
-          {/* v. Pozisyon Analizi */}
+          {/* v. Positioning */}
           <section className="section">
             <div className="section-head">
               <h2 className="section-title">
-                <span className="section-nbr">v.</span>Pozisyon · Analiz
+                <span className="section-nbr">v.</span>Positioning · Read
               </h2>
-              <span className="section-meta">DEALER AKIŞI · MASA NOTLARI</span>
+              <span className="section-meta">DEALER FLOW · DESK NOTLARI</span>
             </div>
             <div className="two-up">
               <div>
                 <p className="pull" style={{ marginBottom: 24 }}>
-                  Satım duvarı ile alım duvarı arasındaki <em>${fmt(aw - sw)}</em> bantı,
-                  gerçekleşen oynaklığı sınırlar — tepe noktadan dibe <em>{((aw - sw) / sp * 100).toFixed(1)}%</em>.
+                  Put Wall ile Call Wall arasındaki <em>${fmt(cw - pw)}</em> bant gerçekleşen volatiliteyi sınırlar —
+                  tepeden dibe <em>{((cw - pw) / sp * 100).toFixed(1)}%</em>.
                 </p>
                 <p style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-2)", lineHeight: 1.7, margin: 0 }}>
-                  Piyasa yapıcılar bu haftaya {pozitif ? "net uzun" : "net kısa"} {fmtB(data.totals.gamma)}$ gamma ile giriyor,{" "}
-                  <b style={{ color: "var(--text)" }}>{fmt(data.levels.callWall)}</b> alım duvarında yoğunlaşmış.
-                  Bu yapısal bir <b style={{ color: "var(--text)" }}>ortalamaya-dönüş</b> eğilimi yaratır —
-                  keskin hareketler, vade sonuna kadar hedge akışıyla törpülenir.
+                  Dealer'lar bu haftaya {pozitif ? "net long" : "net short"} {fmtB(data.totals.gamma)}$ gamma ile giriyor,
+                  {" "}<b style={{ color: "var(--text)" }}>{fmt(data.levels.callWall)}</b> Call Wall'unda yoğunlaşmış.
+                  Bu yapısal bir <b style={{ color: "var(--text)" }}>mean-reversion</b> bias yaratır —
+                  keskin hamleler hedge flow'u tarafından vade sonuna kadar törpülenir.
                 </p>
               </div>
               <div>
                 <div className="sheet-label" style={{ marginBottom: 14 }}>Senaryolar</div>
                 {[
-                  { etiket: "Spot yukarı kırar ↑", hedef: data.levels.callWall, not: "dealerlar delta satmaya başlar" },
-                  { etiket: "Spot sabitlenir",      hedef: data.levels.maxPain,  not: "volatilite vadeye kadar düşer" },
+                  { etiket: "Spot yukarı kırar ↑", hedef: data.levels.callWall, not: "dealer'lar delta satmaya başlar" },
+                  { etiket: "Spot sabitlenir",      hedef: data.levels.maxPain,  not: "vol grinds lower into expiry" },
                   { etiket: "Spot aşağı kırar ↓",  hedef: data.levels.putWall,  not: "gamma negatife döner, vol genişler" },
-                  { etiket: "Haftalık kapanış",     hedef: data.levels.maxPain,  not: "maks. acı mıknatısı" },
+                  { etiket: "Haftalık kapanış",     hedef: data.levels.maxPain,  not: "Max Pain mıknatısı" },
                 ].map(s => (
                   <div key={s.etiket} style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 16, padding: "12px 0", borderBottom: "1px solid var(--hairline-soft)", fontFamily: "var(--mono)", fontSize: 11 }}>
                     <div>
@@ -949,10 +853,10 @@ export default function AnaSayfa() {
             </div>
           </section>
 
-          {/* Alt Bilgi */}
+          {/* Alt bilgi */}
           <footer className="footer">
             <div>
-              <div style={{ marginBottom: 4 }}>Opsiyon Masası · Deribit Günlük Özet</div>
+              <div style={{ marginBottom: 4 }}>Options Desk · Deribit · Günlük Özet</div>
               <div style={{ color: "var(--text-dim)" }}>
                 {new Date().toLocaleDateString("tr-TR", { weekday: "long", day: "numeric", month: "long", year: "numeric" })}
                 {" · "}{data.stats.rows} kontrat · {data.stats.expiries} vade
