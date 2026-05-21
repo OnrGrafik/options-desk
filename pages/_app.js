@@ -52,14 +52,15 @@ const CSS = `
   .sidebar {
     background: var(--surface);
     border-right: 1px solid var(--hairline);
-    padding: 24px 20px;
+    padding: 20px 18px 24px;
     display: flex;
     flex-direction: column;
-    gap: 26px;
+    gap: 22px;
     position: sticky;
     top: 0;
     height: 100vh;
     overflow-y: auto;
+    overflow-x: hidden;
   }
   .brand { display: flex; align-items: baseline; gap: 10px; padding-bottom: 4px; }
   .brand-mark {
