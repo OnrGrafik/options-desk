@@ -178,6 +178,150 @@ function hullYorum(data, sym) {
   return{rejiim,mpYorum,vannaYorum,volYorum,emYorum,posGamma,netGexStr:fmtM(totals.gamma),cw,pw,band,distToCW,distToPW};
 }
 
+// ─── MACRO SIDEBAR ────────────────────────────────────────
+// Seans bölümünün yerine: canlı makro veri paneli
+// Kaynaklar: FRED, US Treasury, Yahoo Finance, CoinGecko
+const MACRO_CACHE = { data: null, loadedAt: 0 };
+const MACRO_TTL   = 5 * 60 * 1000; // 5 dakika
+
+function MacroSidebar() {
+  const [macro, setMacro] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const load = async () => {
+      // Cache kontrolü
+      if (MACRO_CACHE.data && (Date.now() - MACRO_CACHE.loadedAt) < MACRO_TTL) {
+        setMacro(MACRO_CACHE.data); setLoading(false); return;
+      }
+      try {
+        const r = await fetch("/api/macro?module=all");
+        if (!r.ok) return;
+        const d = await r.json();
+        MACRO_CACHE.data = d; MACRO_CACHE.loadedAt = Date.now();
+        setMacro(d);
+      } catch(e) {}
+      setLoading(false);
+    };
+    load();
+    const iv = setInterval(load, MACRO_TTL);
+    return () => clearInterval(iv);
+  }, []);
+
+  const fmtT = v => v != null ? `$${v.toFixed(2)}T` : "—";
+  const fmtPct = v => v != null ? `${v.toFixed(2)}%` : "—";
+  const fmtNum = v => v != null ? v.toLocaleString("tr-TR",{maximumFractionDigits:1}) : "—";
+
+  // Net Likidite rengi
+  const nl = macro?.fed?.netLiquidity?.value;
+  const nlColor = nl == null ? "var(--text)" : nl > 5 ? "var(--pos)" : nl < 3 ? "var(--neg)" : "var(--accent)";
+
+  // 10Y yield rengi: yüksek = ayı
+  const tnx = macro?.markets?.tnx?.close;
+  const tnxColor = tnx == null ? "var(--text)" : tnx > 4.5 ? "var(--neg)" : tnx < 4.0 ? "var(--pos)" : "var(--accent)";
+
+  // DXY rengi: yüksek = BTC için ayı
+  const dxy = macro?.markets?.dxy?.close;
+  const dxyColor = dxy == null ? "var(--text)" : dxy > 104 ? "var(--neg)" : dxy < 100 ? "var(--pos)" : "var(--accent)";
+
+  // Haber sayısı
+  const newsCount = (macro?.news?.fed?.length||0) + (macro?.news?.inflation?.length||0);
+  const topNews   = [...(macro?.news?.fed||[]), ...(macro?.news?.inflation||[])].slice(0, 3);
+
+  return (
+    <>
+      {/* 1. Fed & Likidite */}
+      <div className="sb-section">
+        <div className="sb-label" style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+          <span>Fed &amp; Likidite</span>
+          {loading && <span style={{fontSize:8,color:"var(--text-mute)",fontStyle:"italic"}}>●</span>}
+        </div>
+
+        {/* Net Likidite — en kritik gösterge */}
+        <div style={{background:"var(--surface-2)",border:`1px solid ${nlColor}22`,borderLeft:`2px solid ${nlColor}`,padding:"6px 8px",marginBottom:4}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline"}}>
+            <span style={{fontFamily:"var(--sans)",fontSize:9,fontWeight:600,color:"var(--text-mute)",letterSpacing:"0.08em",textTransform:"uppercase"}}>Net Likidite</span>
+            <span style={{fontFamily:"var(--sans)",fontSize:12,fontWeight:700,color:nlColor}}>{nl != null ? fmtT(nl) : "—"}</span>
+          </div>
+          <div style={{fontFamily:"var(--sans)",fontSize:9,color:"var(--text-mute)",marginTop:2}}>
+            Fed Bilanço − TGA − RRP
+          </div>
+        </div>
+
+        <MacroRow label="Fed Bilanço"  value={macro?.fed?.balance   ? fmtT(macro.fed.balance.valueTr)   : "—"} change={macro?.fed?.balance?.change}/>
+        <MacroRow label="Ters Repo"    value={macro?.fed?.rrp        ? fmtT(macro.fed.rrp.valueTr)        : "—"} change={macro?.fed?.rrp?.change} inverse/>
+        <MacroRow label="TGA"          value={macro?.macro?.tga      ? fmtT(macro.macro.tga.valueTr)      : "—"} change={macro?.macro?.tga?.change} inverse/>
+        <MacroRow label="Fed Faiz"     value={macro?.fed?.fedfunds   ? fmtPct(macro.fed.fedfunds.value)   : "—"} />
+      </div>
+
+      {/* 2. ABD Makro */}
+      <div className="sb-section">
+        <div className="sb-label">ABD Makro</div>
+        <MacroRow label="TÜFE (CPI)"   value={macro?.macro?.cpi    ? fmtPct(macro.macro.cpi.value)    : "—"} change={macro?.macro?.cpi?.change}  inverse/>
+        <MacroRow label="İşsizlik"     value={macro?.macro?.unrate ? fmtPct(macro.macro.unrate.value) : "—"} change={macro?.macro?.unrate?.change} inverse/>
+        <MacroRow label="ABD Borcu"    value={macro?.macro?.debt   ? `$${macro.macro.debt.value?.toFixed(1)}T` : "—"} />
+        <MacroRow label="IMF GSYH"     value={macro?.macro?.imfGrowth ? fmtPct(macro.macro.imfGrowth.value) : "—"} />
+      </div>
+
+      {/* 3. Global Piyasalar */}
+      <div className="sb-section">
+        <div className="sb-label">Global Piyasalar</div>
+        <MacroRow label="10Y Treasury" value={tnx ? `${tnx.toFixed(2)}%`      : "—"} valColor={tnxColor}/>
+        <MacroRow label="DXY"          value={dxy ? dxy.toFixed(2)            : "—"} valColor={dxyColor}/>
+        <MacroRow label="S&amp;P 500"  value={macro?.markets?.spx?.close ? macro.markets.spx.close.toLocaleString("en-US",{maximumFractionDigits:0}) : "—"}/>
+        <MacroRow label="Nasdaq"       value={macro?.markets?.nq?.close  ? macro.markets.nq.close.toLocaleString("en-US",{maximumFractionDigits:0})  : "—"}/>
+        <MacroRow label="BTC Dom."     value={macro?.markets?.crypto?.btcDominance ? `${macro.markets.crypto.btcDominance.toFixed(1)}%` : "—"}/>
+        <MacroRow label="Kripto Mcap"  value={macro?.markets?.crypto?.totalMarketCap ? `$${(macro.markets.crypto.totalMarketCap/1e12).toFixed(2)}T` : "—"} change={macro?.markets?.crypto?.marketCapChange}/>
+      </div>
+
+      {/* 4. Haber Akışı */}
+      {topNews.length > 0 && (
+        <div className="sb-section">
+          <div className="sb-label" style={{display:"flex",justifyContent:"space-between"}}>
+            <span>Makro Haberler</span>
+            <span style={{fontSize:9,color:"var(--accent)",fontWeight:700}}>{newsCount} haber</span>
+          </div>
+          {topNews.map((n, i) => (
+            <div key={i} style={{padding:"5px 0",borderBottom:"1px solid var(--hairline-soft)"}}>
+              <div style={{fontFamily:"var(--sans)",fontSize:10,fontWeight:600,color:"var(--text-2)",lineHeight:1.35,display:"-webkit-box",WebkitLineClamp:2,WebkitBoxOrient:"vertical",overflow:"hidden"}}>
+                {n.title}
+              </div>
+              {n.pubDate && (
+                <div style={{fontFamily:"var(--sans)",fontSize:9,color:"var(--text-mute)",marginTop:2}}>
+                  {new Date(n.pubDate).toLocaleString("tr-TR",{month:"short",day:"numeric",hour:"2-digit",minute:"2-digit"})}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </>
+  );
+}
+
+// Makro satır bileşeni
+function MacroRow({ label, value, change, inverse=false, valColor }) {
+  // change > 0 → pos (inverse=false) veya neg (inverse=true)
+  let chgColor = "var(--text-mute)";
+  if (change != null) {
+    const up = change > 0;
+    chgColor = inverse ? (up ? "var(--neg)" : "var(--pos)") : (up ? "var(--pos)" : "var(--neg)");
+  }
+  return (
+    <div className="sb-item">
+      <span className="sb-item-key" style={{color:"var(--text-mute)",fontSize:10,letterSpacing:"0.05em"}}>{label}</span>
+      <span style={{display:"flex",alignItems:"baseline",gap:4}}>
+        <span style={{fontFamily:"var(--mono)",fontSize:11,fontWeight:600,color:valColor||"var(--text)"}}>{value}</span>
+        {change != null && (
+          <span style={{fontFamily:"var(--sans)",fontSize:9,fontWeight:700,color:chgColor}}>
+            {change > 0 ? "▲" : "▼"}
+          </span>
+        )}
+      </span>
+    </div>
+  );
+}
+
 // ─── SIDEBAR ──────────────────────────────────────────────
 function Sidebar({ watchlist, activeSym, setActiveSym, vade, setVade, data }) {
   return (
@@ -224,12 +368,13 @@ function Sidebar({ watchlist, activeSym, setActiveSym, vade, setVade, data }) {
         <SbStat label="Basis (90g)" value={data.basis?`${data.basis>0?"+":""}${data.basis.toFixed(1)}%`:"+7.4%"} pos/>
         <SbStat label="25Δ Skew"    value="+6.4 vol" pos={false}/>
       </div>
+      {/* Makro Veri Paneli */}
+      <MacroSidebar/>
+
       <div className="sb-section" style={{marginTop:"auto"}}>
-        <div className="sb-label">Seans</div>
-        <SbStat label="Açılış"       value={fmt(data.ticker24h.open)}/>
-        <SbStat label="Yüksek (24s)" value={fmt(data.ticker24h.high)}/>
-        <SbStat label="Düşük (24s)"  value={fmt(data.ticker24h.low)}/>
-        <SbStat label="Opsiyon"      value={`${data.stats.rows} adet`}/>
+        <div className="sb-label" style={{fontSize:9,color:"var(--text-mute)"}}>Options Chain</div>
+        <SbStat label="Opsiyon" value={`${data.stats.rows} adet`}/>
+        <SbStat label="Vade"    value={`${data.stats.expiries} adet`}/>
       </div>
     </aside>
   );
