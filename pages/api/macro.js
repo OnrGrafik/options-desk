@@ -1,258 +1,212 @@
 // ═══════════════════════════════════════════════════════════
-// Makro Ekonomi Veri API
-// Kaynaklar: FRED, US Treasury, Yahoo Finance (proxy),
-//             CoinGecko, Google News RSS, IMF DataMapper
+// Makro Ekonomi Veri API — 9 Kritik Gösterge
+// Kaynak: FRED (St. Louis Fed) public JSON API
+// Her gösterge için son 3 aylık veri + BTC yorum üreteci
 // ═══════════════════════════════════════════════════════════
 
 const HDR = { "Accept": "application/json", "User-Agent": "MacroDeskBot/1.0" };
 
-// ─── FRED API (St. Louis Fed) ─────────────────────────────
-// Ücretsiz API key gerekmez — public seriler
-async function fredSeries(seriesId) {
+// FRED public JSON endpoint — API key gerektirmez
+async function fredSeries(seriesId, limit = 4) {
   try {
-    // FRED public JSON endpoint (API key'siz, limited)
     const url = `https://fred.stlouisfed.org/graph/fredgraph.json?id=${seriesId}`;
-    const r = await fetch(url, { headers: HDR });
+    const r = await fetch(url, { headers: HDR, signal: AbortSignal.timeout(8000) });
     const data = await r.json();
-    if (Array.isArray(data) && data.length > 0) {
-      const last = data[data.length - 1];
-      const prev = data[data.length - 2];
-      return {
-        value: parseFloat(last.value) || null,
-        date: last.date,
-        prev: parseFloat(prev?.value) || null,
-        change: prev ? (parseFloat(last.value) - parseFloat(prev.value)) : null,
-      };
-    }
-  } catch (e) {}
-  return null;
-}
-
-// ─── US Treasury Fiscal Data ──────────────────────────────
-async function fetchTreasuryTGA() {
-  try {
-    const url = "https://api.fiscaldata.treasury.gov/services/api/v1/accounting/dts/deposits_withdrawals_operating_cash?fields=record_date,open_today_bal&sort=-record_date&limit=2";
-    const r = await fetch(url, { headers: HDR });
-    const d = await r.json();
-    const rows = d?.data || [];
-    if (rows.length >= 1) {
-      const latest = parseFloat(rows[0].open_today_bal);
-      const prev   = rows.length >= 2 ? parseFloat(rows[1].open_today_bal) : null;
-      return { value: latest, date: rows[0].record_date, prev, change: prev ? latest - prev : null };
-    }
-  } catch (e) {}
-  return null;
-}
-
-async function fetchTreasuryDebt() {
-  try {
-    const url = "https://api.fiscaldata.treasury.gov/services/api/v1/debt/debt_to_penny?fields=record_date,tot_pub_debt_out_amt&sort=-record_date&limit=1";
-    const r = await fetch(url, { headers: HDR });
-    const d = await r.json();
-    const row = d?.data?.[0];
-    if (row) return { value: parseFloat(row.tot_pub_debt_out_amt) / 1e12, date: row.record_date }; // trilyon
-  } catch (e) {}
-  return null;
-}
-
-// ─── Yahoo Finance proxy (Stooq free API) ─────────────────
-async function fetchStooq(symbol) {
-  try {
-    // Stooq: ücretsiz, kayıt gerektirmez
-    const url = `https://stooq.com/q/l/?s=${encodeURIComponent(symbol)}&f=sd2t2ohlcvn&h&e=json`;
-    const r = await fetch(url, { headers: { ...HDR, "Accept": "*/*" } });
-    const txt = await r.text();
-    // Stooq bazen CSV döner
-    const lines = txt.trim().split("\n");
-    if (lines.length >= 2) {
-      const parts = lines[1].split(",");
-      return { close: parseFloat(parts[4]) || null, open: parseFloat(parts[2]) || null, date: parts[0] };
-    }
-  } catch (e) {}
-  return null;
-}
-
-// ─── CoinGecko Global Market ──────────────────────────────
-async function fetchCoinGeckoGlobal() {
-  try {
-    const r = await fetch("https://api.coingecko.com/api/v3/global", { headers: HDR });
-    const d = await r.json();
-    const g = d?.data;
-    if (g) return {
-      totalMarketCap:   g.total_market_cap?.usd || null,
-      totalVolume:      g.total_volume?.usd || null,
-      btcDominance:     g.market_cap_percentage?.btc || null,
-      ethDominance:     g.market_cap_percentage?.eth || null,
-      marketCapChange:  g.market_cap_change_percentage_24h_usd || null,
+    if (!Array.isArray(data) || !data.length) return null;
+    // Son limit kadar veri (null olmayanlar)
+    const clean = data.filter(d => d.value !== "." && d.value != null);
+    const son = clean.slice(-limit).map(d => ({
+      tarih: d.date,
+      deger: parseFloat(d.value),
+    }));
+    if (!son.length) return null;
+    const enSon = son[son.length - 1];
+    const onceki = son[son.length - 2] || null;
+    return {
+      guncel: enSon.deger,
+      tarih:  enSon.tarih,
+      onceki: onceki?.deger || null,
+      degisim: onceki ? enSon.deger - onceki.deger : null,
+      gecmis: son, // son 4 kayıt
     };
-  } catch (e) {}
-  return null;
+  } catch (e) {
+    return null;
+  }
 }
 
-// ─── Google News RSS (Makro haberler) ─────────────────────
-async function fetchNewsRSS(query) {
+// Google News RSS — kısa haberler
+async function haberCek(sorgu) {
   try {
-    const encoded = encodeURIComponent(query);
-    const url = `https://news.google.com/rss/search?q=${encoded}&hl=en-US&gl=US&ceid=US:en`;
-    const r = await fetch(url, { headers: { ...HDR, "Accept": "application/rss+xml" } });
+    const enc = encodeURIComponent(sorgu);
+    const url = `https://news.google.com/rss/search?q=${enc}&hl=en-US&gl=US&ceid=US:en`;
+    const r = await fetch(url, { headers: { ...HDR, "Accept": "application/rss+xml" }, signal: AbortSignal.timeout(6000) });
     const xml = await r.text();
-    // Basit XML parse (regex, bağımsız lib yok)
     const items = [];
     const re = /<item>([\s\S]*?)<\/item>/g;
     let m;
-    while ((m = re.exec(xml)) !== null && items.length < 5) {
+    while ((m = re.exec(xml)) !== null && items.length < 4) {
       const item = m[1];
-      const title   = (/<title>(.*?)<\/title>/.exec(item)?.[1] || "").replace(/<!\[CDATA\[|\]\]>/g, "").trim();
-      const pubDate = (/<pubDate>(.*?)<\/pubDate>/.exec(item)?.[1] || "").trim();
-      const link    = (/<link>(.*?)<\/link>/.exec(item)?.[1] || "").trim();
-      if (title) items.push({ title, pubDate, link });
+      const baslik = (/<title>(.*?)<\/title>/.exec(item)?.[1] || "").replace(/<!\[CDATA\[|\]\]>/g, "").trim();
+      const tarih  = (/<pubDate>(.*?)<\/pubDate>/.exec(item)?.[1] || "").trim();
+      if (baslik) items.push({ baslik, tarih });
     }
     return items;
-  } catch (e) {}
-  return [];
+  } catch (e) { return []; }
 }
 
-// ─── IMF DataMapper ───────────────────────────────────────
-async function fetchIMF(indicator, countryCode) {
-  try {
-    // IMF DataMapper REST API — ücretsiz, public
-    const url = `https://www.imf.org/external/datamapper/api/v1/${indicator}/${countryCode}`;
-    const r = await fetch(url, { headers: HDR });
-    const d = await r.json();
-    const values = d?.values?.[indicator]?.[countryCode];
-    if (values) {
-      const years = Object.keys(values).sort();
-      const lastYear = years[years.length - 1];
-      const prevYear = years[years.length - 2];
-      return {
-        value: values[lastYear],
-        year:  lastYear,
-        prev:  values[prevYear] || null,
-      };
+// ─── BTC Yorum Üretici ────────────────────────────────────
+// Her göstergenin BTC üzerindeki tipik etkisini açıklar
+function btcYorumu(gostergeler) {
+  const yorumlar = [];
+
+  const { fedFaiz, cpi, nfp, ppi, gsyih, pce, iscabasvurusu, ismImalat, ismHizmet, perakende } = gostergeler;
+
+  // Fed Faiz
+  if (fedFaiz?.guncel != null) {
+    const seviye = fedFaiz.guncel;
+    const yuksek = seviye >= 5.0;
+    const degisim = fedFaiz.degisim || 0;
+    if (Math.abs(degisim) >= 0.25) {
+      yorumlar.push(degisim > 0
+        ? `Fed faiz artışı (${seviye.toFixed(2)}%) risk varlıkları için olumsuz — BTC için satış baskısı olası. Yüksek faiz ortamında BTC ile negatif korelasyon güçlenir.`
+        : `Fed faiz indirimi (${seviye.toFixed(2)}%) risk iştahını artırır — BTC için olumlu sinyal. Likidite genişlemesi kripto piyasalarını yukarı taşır.`);
+    } else {
+      yorumlar.push(seviye >= 5.0
+        ? `Fed faiz ${seviye.toFixed(2)}% ile kısıtlayıcı bölgede. Değişiklik olmadı — BTC için nötr görünüm, ancak yüksek faiz ortamı orta vadede baskı yaratmaya devam eder.`
+        : `Fed faiz ${seviye.toFixed(2)}% seviyesinde sabit — BTC için nötr. Sonraki FOMC kararları kritik izlenecek.`);
     }
-  } catch (e) {}
-  return null;
-}
+  }
 
-// ─── Hesapla: Global Net Likidite ─────────────────────────
-// Net Likidite = Fed Bilançosu - TGA - RRP
-// Kaynak: CrossBorderCapital metodolojisi
-function calcNetLiquidity(fedBalance, tga, rrp) {
-  if (!fedBalance || !tga) return null;
-  const rrpVal = rrp || 0;
-  return {
-    value:      fedBalance - tga - rrpVal,
-    components: { fedBalance, tga, rrp: rrpVal },
-  };
+  // CPI (Enflasyon)
+  if (cpi?.guncel != null) {
+    const oran = cpi.degisim;
+    if (oran != null) {
+      yorumlar.push(oran > 0
+        ? `TÜFE ${cpi.guncel.toFixed(1)} ile beklentinin üzerinde — enflasyon kalıcılığı Fed'in faiz indirimine geç geçmesine neden olur. BTC için kısa vadede olumsuz, uzun vadede enflasyon hedge'i olarak olumlu senaryolar çatışır.`
+        : `TÜFE ${cpi.guncel.toFixed(1)} ile geriledi — enflasyonun dizginlenmesi Fed faiz indirim beklentisini güçlendirir. Likidite genişlemesi BTC için orta vadede olumlu.`);
+    }
+  }
+
+  // NFP (Tarım Dışı İstihdam)
+  if (nfp?.guncel != null) {
+    const kuvvetli = nfp.guncel > 200;
+    yorumlar.push(kuvvetli
+      ? `NFP ${nfp.guncel.toLocaleString("tr-TR")}K ile güçlü iş piyasası. Güçlü istihdam = Fed sıkılaştırma baskısı devam eder = BTC için baskıcı ortam. Olumsuz.`
+      : `NFP ${nfp.guncel.toLocaleString("tr-TR")}K ile zayıf istihdam. İş piyasasındaki soğuma Fed faiz indirimini hızlandırabilir — BTC için potansiyel olumlu.`);
+  }
+
+  // PPI
+  if (ppi?.degisim != null) {
+    yorumlar.push(ppi.degisim > 0
+      ? `ÜFE artışı (${ppi.guncel.toFixed(1)}) üretici fiyat baskısını gösteriyor — tüketici enflasyonunu besler, Fed temkinli kalır. BTC için olumsuz sinyal.`
+      : `ÜFE geriledi (${ppi.guncel.toFixed(1)}) — maliyet baskıları azalıyor, enflasyon beklentileri düşüyor. BTC için hafif olumlu.`);
+  }
+
+  // GSYİH
+  if (gsyih?.guncel != null) {
+    yorumlar.push(gsyih.guncel >= 2
+      ? `GSYİH büyüme ${gsyih.guncel.toFixed(1)}% — güçlü ekonomi Fed'in faiz politikasını sıkı tutmasını sağlar. Kısa vadede BTC için risk-off baskısı.`
+      : `GSYİH büyüme ${gsyih.guncel.toFixed(1)}% — ekonomik yavaşlama Fed gevşeme beklentisini artırır. BTC için orta vadede olumlu.`);
+  }
+
+  // PCE
+  if (pce?.degisim != null) {
+    yorumlar.push(pce.degisim > 0
+      ? `PCE endeksi yükseldi (${pce.guncel.toFixed(2)}) — Fed'in tercih ettiği enflasyon ölçütü beklenti üzerinde, para politikası sıkı kalır. BTC olumsuz.`
+      : `PCE endeksi geriledi (${pce.guncel.toFixed(2)}) — enflasyonun Fed hedefine yaklaşması faiz indirimi yolunu açar. BTC olumlu.`);
+  }
+
+  // İşsizlik Başvuruları
+  if (iscabasvurusu?.guncel != null) {
+    const dusuk = iscabasvurusu.guncel < 220;
+    yorumlar.push(dusuk
+      ? `Haftalık işsizlik başvuruları ${iscabasvurusu.guncel.toLocaleString("tr-TR")}K ile düşük — güçlü iş piyasası Fed sıkılaştırmasını destekler. BTC için baskıcı.`
+      : `Haftalık işsizlik başvuruları ${iscabasvurusu.guncel.toLocaleString("tr-TR")}K ile artıyor — iş piyasası zayıflıyor, Fed gevşeme ihtimali artar. BTC için olumlu.`);
+  }
+
+  // ISM İmalat
+  if (ismImalat?.guncel != null) {
+    const genisliyor = ismImalat.guncel > 50;
+    yorumlar.push(genisliyor
+      ? `ISM İmalat PMI ${ismImalat.guncel.toFixed(1)} — imalat sektörü genişliyor, reel ekonomi güçlü. BTC için risk-on ortam olumlu.`
+      : `ISM İmalat PMI ${ismImalat.guncel.toFixed(1)} — imalat daralıyor, ekonomik yavaşlama sinyali. Risk iştahı azalır, BTC baskı altında.`);
+  }
+
+  // Perakende Satışlar
+  if (perakende?.degisim != null) {
+    yorumlar.push(perakende.degisim > 0
+      ? `Perakende satışlar arttı (${perakende.degisim >= 0 ? "+" : ""}${perakende.degisim.toFixed(1)}) — tüketici harcamaları güçlü, enflasyon baskısı sürer. Fed faiz düşürmeye acele etmez.`
+      : `Perakende satışlar düştü (${perakende.degisim.toFixed(1)}) — tüketici zayıflıyor, büyüme endişesi artar. Fed faiz indirim beklentisi güçlenir, BTC için olumlu.`);
+  }
+
+  // Genel BTC sentez yorumu
+  const olumlu = yorumlar.filter(y => y.includes("olumlu")).length;
+  const olumsuz = yorumlar.filter(y => y.includes("olumsuz") || y.includes("baskı")).length;
+
+  let sentez = "";
+  if (olumlu > olumsuz) {
+    sentez = `📗 Makro tablo genel olarak BTC için OLUMLu görünüyor. ${olumlu} göstergede fiyatı destekleyen sinyal mevcut. Risk iştahı artış eğiliminde.`;
+  } else if (olumsuz > olumlu) {
+    sentez = `📕 Makro tablo genel olarak BTC için OLUMSUZ görünüyor. ${olumsuz} göstergede fiyat baskısı riski mevcut. Risk-off ortamı hakim.`;
+  } else {
+    sentez = `📙 Makro tablo NÖTR. Sinyaller çelişiyor — volatilite azalması ve yön bekleme dönemi olası.`;
+  }
+
+  return { yorumlar, sentez };
 }
 
 // ─── ANA HANDLER ──────────────────────────────────────────
 export default async function handler(req, res) {
-  const { module } = req.query;
-
   try {
-    if (module === "all" || !module) {
-      // Tüm modülleri paralel çek
-      const [
-        fedBalance, // WALCL — Fed toplam bilançosu (milyar $)
-        rrp,        // RRPONTTLD — Ters Repo (milyar $)
-        cpi,        // CPIAUCSL — ABD TÜFE
-        fedfunds,   // FEDFUNDS — Fed faiz oranı
-        unrate,     // UNRATE — İşsizlik oranı
-        tga,
-        debt,
-        cgGlobal,
-        // Yahoo Finance / Stooq proxies
-        tnx,   // 10Y Treasury yield
-        dxy,   // Dolar endeksi
-        spx,   // S&P 500
-        nq,    // Nasdaq
-        // News
-        fedNews,
-        inflNews,
-        // IMF
-        imfGrowth,
-      ] = await Promise.allSettled([
-        fredSeries("WALCL"),
-        fredSeries("RRPONTTLD"),
-        fredSeries("CPIAUCSL"),
-        fredSeries("FEDFUNDS"),
-        fredSeries("UNRATE"),
-        fetchTreasuryTGA(),
-        fetchTreasuryDebt(),
-        fetchCoinGeckoGlobal(),
-        fetchStooq("^tnx"),
-        fetchStooq("dxy"),
-        fetchStooq("^spx"),
-        fetchStooq("^ndx"),
-        fetchNewsRSS("Federal Reserve FOMC interest rates"),
-        fetchNewsRSS("inflation CPI economy"),
-        fetchIMF("NGDP_RPCH", "USA"), // ABD reel GSYH büyüme
-      ]).then(rs => rs.map(r => r.status === "fulfilled" ? r.value : null));
+    // Tüm 9 göstergeyi paralel çek (son 4 veri = ~3 ay)
+    const [
+      fedFaiz,         // FEDFUNDS
+      cpi,             // CPIAUCSL — TÜFE
+      nfp,             // PAYEMS — NFP
+      ppi,             // PPIACO — ÜFE
+      gsyih,           // A191RL1Q225SBEA — GDP
+      pce,             // PCEPI — PCE
+      iscabasvurusu,   // ICSA — İşsizlik başvuruları
+      ismImalat,       // MANEMP proxy (ISM direkt FRED'de yok, PMI için alternatif)
+      ismHizmet,       // NMFCI — Chicago Fed
+      perakende,       // RSAFS — Perakende satışlar
+      fedHaberleri,
+      enflasyonHaberleri,
+    ] = await Promise.allSettled([
+      fredSeries("FEDFUNDS", 4),
+      fredSeries("CPIAUCSL", 4),
+      fredSeries("PAYEMS",   4),
+      fredSeries("PPIACO",   4),
+      fredSeries("A191RL1Q225SBEA", 4),
+      fredSeries("PCEPI",    4),
+      fredSeries("ICSA",     4),
+      fredSeries("NAPM",     4),  // ISM İmalat
+      fredSeries("NMFCI",    4),  // Chicago Fed financial conditions (ISM Hizmet proxy)
+      fredSeries("RSAFS",    4),  // Perakende satışlar
+      haberCek("Federal Reserve FOMC interest rate decision"),
+      haberCek("inflation CPI economy United States"),
+    ]).then(rs => rs.map(r => r.status === "fulfilled" ? r.value : null));
 
-      // Fed bilanço milyar → trilyon
-      const fedBalT = fedBalance ? { ...fedBalance, valueTr: fedBalance.value / 1e3 } : null;
-      const rrpT    = rrp        ? { ...rrp,        valueTr: rrp.value / 1e3 }        : null;
-      const tgaT    = tga        ? { ...tga,        valueTr: tga.value / 1e6 }        : null; // TGA milyar $
+    const gostergeler = {
+      fedFaiz, cpi, nfp, ppi, gsyih, pce,
+      iscabasvurusu, ismImalat, ismHizmet, perakende,
+    };
 
-      const netLiquidity = calcNetLiquidity(
-        fedBalT?.valueTr,
-        tgaT?.valueTr,
-        rrpT?.valueTr
-      );
+    const { yorumlar, sentez } = btcYorumu(gostergeler);
 
-      const result = {
-        timestamp: new Date().toISOString(),
-        fed: {
-          balance:  fedBalT,
-          rrp:      rrpT,
-          fedfunds: fedfunds,
-          netLiquidity,
-        },
-        macro: {
-          cpi:    cpi,
-          unrate: unrate,
-          debt:   debt,
-          tga:    tgaT,
-          imfGrowth: imfGrowth,
-        },
-        markets: {
-          tnx: tnx,    // 10Y yield
-          dxy: dxy,
-          spx: spx,
-          nq:  nq,
-          crypto: cgGlobal,
-        },
-        news: {
-          fed:      fedNews   || [],
-          inflation: inflNews || [],
-        },
-      };
+    const sonuc = {
+      guncellendi: new Date().toISOString(),
+      gostergeler,
+      btcYorum: { yorumlar, sentez },
+      haberler: {
+        fed:       fedHaberleri      || [],
+        enflasyon: enflasyonHaberleri || [],
+      },
+    };
 
-      res.setHeader("Cache-Control", "s-maxage=300, stale-while-revalidate=600");
-      return res.status(200).json(result);
-    }
-
-    // Modül bazlı çekimler
-    if (module === "news") {
-      const query = req.query.q || "Federal Reserve inflation";
-      const news  = await fetchNewsRSS(query);
-      return res.status(200).json({ news });
-    }
-
-    if (module === "liquidity") {
-      const [fedBalance, rrp, tga] = await Promise.all([
-        fredSeries("WALCL"), fredSeries("RRPONTTLD"), fetchTreasuryTGA(),
-      ]);
-      const fedT = fedBalance ? fedBalance.value / 1e3 : null;
-      const rrpT = rrp        ? rrp.value / 1e3        : null;
-      const tgaT = tga        ? tga.value / 1e6        : null;
-      return res.status(200).json({ fedBalance: fedT, rrp: rrpT, tga: tgaT, netLiquidity: calcNetLiquidity(fedT, tgaT, rrpT) });
-    }
-
-    res.status(400).json({ error: "unknown module" });
-
+    res.setHeader("Cache-Control", "s-maxage=300, stale-while-revalidate=600");
+    return res.status(200).json(sonuc);
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    return res.status(500).json({ hata: e.message });
   }
 }
