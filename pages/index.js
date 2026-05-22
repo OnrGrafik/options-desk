@@ -129,7 +129,7 @@ function hullYorumUret(data, sym) {
 }
 
 // ─── KENAR ÇUBUĞU ─────────────────────────────────────────
-function KenarCubugu({ izleme, aktifSekme, setAktifSekme, vade, setVade, data }) {
+function KenarCubugu({ izleme, aktifSekme, setAktifSekme, vade, setVade }) {
   return (
     <aside className="sidebar">
       <div className="brand">
@@ -187,24 +187,28 @@ function KenarCubugu({ izleme, aktifSekme, setAktifSekme, vade, setVade, data })
         </div>
       )}
 
-      {/* Piyasa verileri — sadece opsiyon sekmelerinde */}
-      {aktifSekme!=="MAKRO" && data && (
-        <>
-          <div className="sb-section">
-            <div className="sb-label">Piyasa Verileri</div>
-            <SbStat label="DVOL"         value={data.dvol.toFixed(1)}/>
-            <SbStat label="ATM IV"       value={`${data.dvol.toFixed(1)}%`}/>
-            <SbStat label="Fonlama"      value={`${(data.funding*100).toFixed(3)}%`} pos={data.funding>=0}/>
-            <SbStat label="Baz (90g)"    value={data.basis?`${data.basis>0?"+":""}${data.basis.toFixed(1)}%`:"+7.4%"} pos/>
-            <SbStat label="25Δ Eğimi"    value="+6.4 vol" pos={false}/>
-          </div>
-          <div className="sb-section" style={{marginTop:"auto"}}>
-            <div className="sb-label">Opsiyon Zinciri</div>
-            <SbStat label="Kontrat" value={`${data.stats.rows} adet`}/>
-            <SbStat label="Vade"    value={`${data.stats.expiries} adet`}/>
-          </div>
-        </>
-      )}
+      {/* Piyasa verileri — cache'den oku, data prop'a gerek yok */}
+      {aktifSekme!=="MAKRO" && (() => {
+        const d = CACHE[aktifSekme]?.raw;
+        if (!d || d.loading) return null;
+        return (
+          <>
+            <div className="sb-section">
+              <div className="sb-label">Piyasa Verileri</div>
+              <SbStat label="DVOL"      value={(d.dvol||0).toFixed(1)}/>
+              <SbStat label="ATM IV"    value={`${(d.dvol||0).toFixed(1)}%`}/>
+              <SbStat label="Fonlama"   value={`${((d.funding||0)*100).toFixed(3)}%`} pos={(d.funding||0)>=0}/>
+              <SbStat label="Baz (90g)" value={d.basis?`${d.basis>0?"+":""}${d.basis.toFixed(1)}%`:"+7.4%"} pos/>
+              <SbStat label="25Δ Eğimi" value="+6.4 vol" pos={false}/>
+            </div>
+            <div className="sb-section" style={{marginTop:"auto"}}>
+              <div className="sb-label">Opsiyon Zinciri</div>
+              <SbStat label="Kontrat" value={`${d.stats?.rows||0} adet`}/>
+              <SbStat label="Vade"    value={`${d.stats?.expiries||0} adet`}/>
+            </div>
+          </>
+        );
+      })()}
     </aside>
   );
 }
@@ -785,6 +789,25 @@ function OpsiyonSayfasi({ sym, vade }) {
 
   return (
     <>
+      {/* Varlık başlık çubuğu */}
+      <div style={{padding:"8px 36px",borderBottom:"1px solid var(--hairline-soft)",display:"flex",justifyContent:"space-between",alignItems:"center",background:"var(--surface-2)"}}>
+        <div style={{display:"flex",gap:10,alignItems:"center"}}>
+          <span style={{width:8,height:8,borderRadius:"50%",background:asset.color,display:"inline-block"}}/>
+          <span style={{fontFamily:"var(--sans)",fontSize:13,fontWeight:700,color:"var(--text)"}}>{asset.label}</span>
+          <span style={{fontFamily:"var(--sans)",fontSize:16,fontWeight:700,color:pozitif?"var(--pos)":"var(--neg)",fontVariantNumeric:"tabular-nums"}}>
+            {data.spot?`$${data.spot.toLocaleString("tr-TR",{maximumFractionDigits:0})}`:"—"}
+          </span>
+          <span style={{fontFamily:"var(--sans)",fontSize:11,fontWeight:700,color:pozitif?"var(--pos)":"var(--neg)"}}>
+            ● {pozitif?"Pozitif Gamma":"Negatif Gamma"}
+          </span>
+        </div>
+        <div style={{display:"flex",gap:10,alignItems:"center"}}>
+          <span style={{fontFamily:"var(--sans)",fontSize:10,color:"var(--text-mute)",fontWeight:500}}>
+            Güncellendi: <b style={{color:"var(--text)"}}>{saatStr}</b>
+          </span>
+          <button onClick={data.yenile} className="h-action">↻ Yenile</button>
+        </div>
+      </div>
       {/* i. Strike Topografyası */}
       <section className="section">
         <div className="section-head">
@@ -908,8 +931,6 @@ export default function AnaSayfa() {
   },[]);
 
   const aktifVarlik = ASSETS[aktifSekme];
-  const opsiyonData = aktifSekme!=="MAKRO" ? varlikVerisiKullan(aktifSekme,vade) : null;
-  const saatStr = opsiyonData?.lastUpdate?.toLocaleTimeString("tr-TR",{hour:"2-digit",minute:"2-digit",second:"2-digit"})||"—";
 
   return (
     <>
@@ -921,7 +942,6 @@ export default function AnaSayfa() {
           setAktifSekme={s=>{setAktifSekme(s); if(s!=="MAKRO") setVade("all");}}
           vade={vade}
           setVade={setVade}
-          data={opsiyonData}
         />
 
         <main className="main">
@@ -938,15 +958,7 @@ export default function AnaSayfa() {
               </span>
             </div>
             <div className="header-actions">
-              {aktifSekme!=="MAKRO" && (
-                <div className="h-stat">
-                  <span className="h-stat-label">Güncellendi</span>
-                  <span className="h-stat-value tabular">{saatStr} UTC</span>
-                </div>
-              )}
-              {aktifSekme!=="MAKRO" && opsiyonData && (
-                <button className="h-action" onClick={opsiyonData.yenile}>↻ Yenile</button>
-              )}
+
               <button className="h-action">⤓ PDF İndir</button>
             </div>
           </div>
