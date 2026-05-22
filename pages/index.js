@@ -281,19 +281,19 @@ function MakroSayfasi() {
       veri: g.fedFaiz,
     },
     {
-      id:"cpi", baslik:"TÜFE (CPI — Enflasyon)", kaynak:"FRED · CPIAUCSL",
+      id:"cpi", baslik:"TÜFE (CPI — Enflasyon)", kaynak:"BLS · CUUR0000SA0",
       birim:"", ters:true,
       aciklama:"ABD Tüketici Fiyat Endeksi. Yüksek enflasyon Fed'in faiz düşürmesini geciktirir, BTC için olumsuz. Enflasyonun gerilemesi faiz indirimi yolunu açar.",
       veri: g.cpi,
     },
     {
-      id:"nfp", baslik:"Tarım Dışı İstihdam (NFP)", kaynak:"FRED · PAYEMS",
+      id:"nfp", baslik:"Tarım Dışı İstihdam (NFP)", kaynak:"BLS · CES0000000001",
       birim:"K", ters:true,
-      aciklama:"ABD'de tarım dışı sektörde aylık eklenen iş sayısı. Güçlü NFP = güçlü ekonomi = Fed sıkı duruşu = BTC baskısı.",
+      aciklama:"ABD'de tarım dışı sektörde aylık eklenen iş değişimi (bin kişi). Nisan 2026: +115K. Güçlü NFP = Fed sıkı = BTC baskısı. Zayıf NFP = Fed gevşeme beklentisi = BTC pozitif.",
       veri: g.nfp,
     },
     {
-      id:"ppi", baslik:"ÜFE (PPI — Üretici Fiyatları)", kaynak:"FRED · PPIACO",
+      id:"ppi", baslik:"ÜFE (PPI — Üretici Fiyatları)", kaynak:"BLS · WPS000000000",
       birim:"", ters:true,
       aciklama:"Üretici Fiyat Endeksi. Öncü enflasyon göstergesi — yükselen ÜFE ileride tüketici enflasyonunu besler.",
       veri: g.ppi,
@@ -311,9 +311,9 @@ function MakroSayfasi() {
       veri: g.pce,
     },
     {
-      id:"iscabasvurusu", baslik:"İşsizlik Maaşı Başvuruları", kaynak:"FRED · ICSA",
-      birim:"K", ters:false,
-      aciklama:"Haftalık ilk işsizlik başvurusu sayısı. Artış iş piyasasının zayıfladığını gösterir, Fed gevşemesini hızlandırabilir.",
+      id:"iscabasvurusu", baslik:"İşsizlik Oranı", kaynak:"BLS · LNS14000000",
+      birim:"%", ters:true,
+      aciklama:"ABD İşsizlik Oranı (%). Artış iş piyasasının zayıfladığını gösterir, Fed gevşemesini hızlandırabilir. %4.5 üstü tarihsel Fed müdahale eşiği.",
       veri: g.iscabasvurusu,
     },
     {
@@ -323,9 +323,9 @@ function MakroSayfasi() {
       veri: g.ismImalat,
     },
     {
-      id:"perakende", baslik:"Perakende Satışlar", kaynak:"FRED · RSAFS",
-      birim:"", ters:true,
-      aciklama:"ABD perakende satışlar. Tüketici harcamalarının gücünü ölçer. Güçlü = Fed sıkı, Zayıf = Fed gevşeme ihtimali artar.",
+      id:"perakende", baslik:"Perakende Satışlar", kaynak:"Census · RSAFS",
+      birim:" Mr$", ters:true,
+      aciklama:"ABD perakende satışlar (milyar $). Tüketici harcamalarının gücünü ölçer. Güçlü = enflasyon baskısı devam = Fed sıkı. Zayıf = ekonomi yavaşlıyor = Fed gevşeme ihtimali artar.",
       veri: g.perakende,
     },
   ];
@@ -506,7 +506,7 @@ function KriptoEtkiTablosu({ veri }) {
       tarihselNot:  "2024 PCE gerilemesi ile Fed indirime geçti, BTC aynı dönemde tüm zamanların zirvesine ulaştı.",
     },
     {
-      gosterge: "İşsizlik Oranı",
+      gosterge: "İşsizlik Oranı (%)",
       deger: g.iscabasvurusu?.guncel, birim: "%",
       degisim: g.iscabasvurusu?.degisim, trend: g.iscabasvurusu?.trend,
       gecmis: g.iscabasvurusu?.gecmis,
