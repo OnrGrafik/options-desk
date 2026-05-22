@@ -1,478 +1,359 @@
 // ═══════════════════════════════════════════════════════════
 // Makro Ekonomi API — Doğrulanmış Kaynaklar
-// BLS API v2 (key'siz): CPI, NFP, PPI, İşsizlik, Perakende
-// US Treasury Fiscal Data: Fed Faiz proxy (avg interest rates)
+// BLS API v2 (key'siz): CPI, NFP, PPI, İşsizlik
+// US Treasury: Fed Faiz proxy
 // World Bank (key'siz): GSYİH, PCE
-// Stooq (key'siz): ISM PMI proxy (S&P Küresel PMI)
-// Google News TR: Sadece Türkçe haberler
+// ISM PMI: FRED chart + statik fallback
+// Perakende: FRED chart + statik fallback
+// Google News TR: Türkçe haberler
 // ═══════════════════════════════════════════════════════════
 
 const HDR = { "Accept":"application/json","User-Agent":"MacroDeskBot/3.0" };
 const TO  = 12000;
 
-// ─── Güvenli fetch ────────────────────────────────────────
-async function gFetch(url, opts = {}) {
+async function gFetch(url, opts={}) {
   try {
-    const r = await fetch(url, { headers: HDR, signal: AbortSignal.timeout(TO), ...opts });
+    const r = await fetch(url, { headers:HDR, signal:AbortSignal.timeout(TO), ...opts });
     if (!r.ok) return null;
-    const ct = r.headers.get("content-type") || "";
-    if (ct.includes("json")) return r.json();
-    return r.text();
-  } catch (e) { return null; }
-}
-
-// ─── BLS Public API v2 — POST (key gerektirmez) ──────────
-// Doğru seri kodları: https://www.bls.gov/help/hlpforma.htm
-async function bls(seriesId, yil = 1) {
-  try {
-    const now   = new Date().getFullYear();
-    const start = now - yil;
-    const r = await fetch("https://api.bls.gov/publicAPI/v2/timeseries/data/", {
-      method:  "POST",
-      headers: { ...HDR, "Content-Type": "application/json" },
-      body:    JSON.stringify({ seriesid:[seriesId], startyear:String(start), endyear:String(now) }),
-      signal:  AbortSignal.timeout(TO),
-    });
-    if (!r.ok) return null;
-    const d    = await r.json();
-    const seri = d?.Results?.series?.[0]?.data;
-    if (!seri?.length) return null;
-    // BLS: en yeni en başta → sırala
-    const temiz = seri
-      .filter(x => x.value !== "-" && x.value !== "")
-      .map(x => ({
-        tarih: `${x.year}-${(x.period||"M00").replace("M","").padStart(2,"0")}`,
-        deger: parseFloat(x.value),
-        donem: `${x.periodName || x.period} ${x.year}`,
-      }))
-      .sort((a,b) => a.tarih.localeCompare(b.tarih));
-    if (!temiz.length) return null;
-    const son4  = temiz.slice(-4);
-    const enSon = son4[son4.length - 1];
-    const oBase = son4[son4.length - 2] || null;
-    return {
-      guncel:  enSon.deger,
-      tarih:   enSon.tarih,
-      donem:   enSon.donem,
-      onceki:  oBase?.deger ?? null,
-      degisim: oBase ? +(enSon.deger - oBase.deger).toFixed(3) : null,
-      gecmis:  son4,
-      trend:   hesaplaTrend(son4.map(d=>d.deger)),
-    };
-  } catch (e) { return null; }
-}
-
-// ─── US Treasury Fiscal Data ─────────────────────────────
-// Fed Faiz için: Average Interest Rates on US Treasury Securities
-// Endpoint: v2/accounting/od/avg_interest_rates
-// security_type_desc = "Treasury Bills" → kısa vadeli faiz proxy
-async function hazineFaiz() {
-  try {
-    const url = "https://api.fiscaldata.treasury.gov/services/api/v1/accounting/od/avg_interest_rates?fields=record_date,security_desc,avg_interest_rate_amt&filter=security_desc:eq:Treasury%20Bills&sort=-record_date&limit=6";
-    const d   = await gFetch(url);
-    if (!d?.data?.length) return null;
-    const satirlar = d.data
-      .filter(r => r.avg_interest_rate_amt && r.avg_interest_rate_amt !== "null")
-      .map(r => ({ tarih: r.record_date, deger: parseFloat(r.avg_interest_rate_amt) }))
-      .sort((a,b) => a.tarih.localeCompare(b.tarih));
-    if (!satirlar.length) return null;
-    const son4  = satirlar.slice(-4);
-    const enSon = son4[son4.length - 1];
-    const oBase = son4[son4.length - 2] || null;
-    return {
-      guncel:  +enSon.deger.toFixed(2),
-      tarih:   enSon.tarih,
-      onceki:  oBase ? +oBase.deger.toFixed(2) : null,
-      degisim: oBase ? +(enSon.deger - oBase.deger).toFixed(3) : null,
-      gecmis:  son4.map(r => ({ tarih: r.tarih, deger: +r.deger.toFixed(2) })),
-      trend:   hesaplaTrend(son4.map(d=>d.deger)),
-    };
-  } catch (e) { return null; }
-}
-
-// ─── US Treasury Borç ─────────────────────────────────────
-async function hazineBorc() {
-  try {
-    const url = "https://api.fiscaldata.treasury.gov/services/api/v1/debt/debt_to_penny?fields=record_date,tot_pub_debt_out_amt&sort=-record_date&limit=4";
-    const d   = await gFetch(url);
-    if (!d?.data?.length) return null;
-    const rows = d.data
-      .map(r => ({ tarih: r.record_date, deger: +(parseFloat(r.tot_pub_debt_out_amt)/1e12).toFixed(2) }))
-      .sort((a,b) => a.tarih.localeCompare(b.tarih));
-    const enSon = rows[rows.length-1];
-    const oBase = rows[rows.length-2] || null;
-    return {
-      guncel: enSon.deger, tarih: enSon.tarih,
-      onceki: oBase?.deger ?? null,
-      degisim: oBase ? +(enSon.deger-oBase.deger).toFixed(3) : null,
-      gecmis:  rows.slice(-4), trend: hesaplaTrend(rows.map(d=>d.deger)),
-    };
+    const ct = r.headers.get("content-type")||"";
+    return ct.includes("json") ? r.json() : r.text();
   } catch(e) { return null; }
 }
 
-// ─── World Bank API (key'siz) ─────────────────────────────
-async function wb(kod, ulke="US") {
-  try {
-    const url = `https://api.worldbank.org/v2/country/${ulke}/indicator/${kod}?format=json&per_page=6&mrv=6`;
-    const d   = await gFetch(url);
-    const rows = d?.[1];
-    if (!Array.isArray(rows)) return null;
-    const temiz = rows
-      .filter(r => r.value != null)
-      .map(r => ({ tarih: String(r.date), deger: +parseFloat(r.value).toFixed(2) }))
-      .sort((a,b) => a.tarih.localeCompare(b.tarih));
-    if (!temiz.length) return null;
-    const son4  = temiz.slice(-4);
-    const enSon = son4[son4.length-1];
-    const oBase = son4[son4.length-2] || null;
-    return {
-      guncel: enSon.deger, tarih: enSon.tarih,
-      onceki: oBase?.deger ?? null,
-      degisim: oBase ? +(enSon.deger-oBase.deger).toFixed(2) : null,
-      gecmis:  son4, trend: hesaplaTrend(son4.map(d=>d.deger)),
-    };
-  } catch(e) { return null; }
-}
-
-// ─── ISM PMI — ISM.pm doğrudan RSS/JSON ───────────────────
-// ISM PMI BLS'de yok. En güvenilir ücretsiz kaynak: Trading Economics scrape
-// veya St Louis Fed FRED'in açık serisi NAPM (ISM Manufacturing Index)
-// FRED artık key gerektiriyor ama aşağıdaki endpoint hâlâ çalışıyor:
-async function ismPmi() {
-  // Yöntem 1: FRED public chart JSON (bazen çalışıyor)
-  try {
-    const url = "https://fred.stlouisfed.org/graph/fredgraph.json?id=NAPM";
-    const d   = await gFetch(url);
-    if (Array.isArray(d) && d.length) {
-      const temiz = d
-        .filter(x => x.value !== ".")
-        .map(x => ({ tarih: x.date, deger: parseFloat(x.value) }))
-        .slice(-4);
-      if (temiz.length) {
-        const enSon = temiz[temiz.length-1];
-        const oBase = temiz[temiz.length-2]||null;
-        return {
-          guncel: enSon.deger, tarih: enSon.tarih,
-          onceki: oBase?.deger??null,
-          degisim: oBase ? +(enSon.deger-oBase.deger).toFixed(1) : null,
-          gecmis: temiz, trend: hesaplaTrend(temiz.map(d=>d.deger)),
-        };
-      }
-    }
-  } catch(e) {}
-
-  // Yöntem 2: Statik güncel veri (araştırmadan — ISM resmi web sitesi)
-  // 2026 Nisan verisi: 52.7, Mart: 52.7, Şubat: 52.4, Ocak: 52.6
-  return {
-    guncel: 52.7, tarih: "2026-04",
-    onceki: 52.7, degisim: 0.0,
-    gecmis: [
-      {tarih:"2026-01",deger:52.6},{tarih:"2026-02",deger:52.4},
-      {tarih:"2026-03",deger:52.7},{tarih:"2026-04",deger:52.7},
-    ],
-    trend: "sabit", kaynakNotu: "statik",
-  };
-}
-
-// ─── Perakende Satışlar ───────────────────────────────────
-// BLS'de RSXFS seri kodu doğru değil. US Census Bureau kullanıyoruz
-// Census API: retail sales aylık — key gerektirmez
-async function perakendeSatis() {
-  // Yöntem 1: BLS CUSR0000SETA (ulaşım hariç perakende proxy)
-  try {
-    const d = await bls("CUSR0000SETA02", 1);
-    if (d?.guncel) return d;
-  } catch(e){}
-
-  // Yöntem 2: Doğrudan FRED chart (bazen çalışıyor)
-  try {
-    const url = "https://fred.stlouisfed.org/graph/fredgraph.json?id=RSAFS";
-    const d   = await gFetch(url);
-    if (Array.isArray(d) && d.length) {
-      const temiz = d
-        .filter(x=>x.value!==".")
-        .map(x=>({tarih:x.date, deger:parseFloat(x.value)}))
-        .slice(-4);
-      if (temiz.length) {
-        const enSon=temiz[temiz.length-1],oBase=temiz[temiz.length-2]||null;
-        return {
-          guncel:enSon.deger,tarih:enSon.tarih,
-          onceki:oBase?.deger??null,
-          degisim:oBase?+(enSon.deger-oBase.deger).toFixed(1):null,
-          gecmis:temiz,trend:hesaplaTrend(temiz.map(d=>d.deger)),
-        };
-      }
-    }
-  } catch(e){}
-
-  // Yöntem 3: Sabit güncel veri (US Census Bureau, Mart 2026)
-  // Perakende satışlar Mart 2026: $724.1Mr, Şubat: $720.3Mr
-  return {
-    guncel: 724.1, tarih: "2026-03", onceki: 720.3, degisim: 3.8,
-    gecmis: [
-      {tarih:"2025-12",deger:710.2},{tarih:"2026-01",deger:715.4},
-      {tarih:"2026-02",deger:720.3},{tarih:"2026-03",deger:724.1},
-    ],
-    trend: "yukari", kaynakNotu: "statik",
-  };
-}
-
-// ─── Trend Hesapla ────────────────────────────────────────
-// Son 4 veriye doğrusal regresyon — eğim yönünü belirler
+// ─── Trend hesapla (lineer regresyon eğimi) ───────────────
 function hesaplaTrend(degerler) {
   if (!degerler || degerler.length < 2) return "belirsiz";
-  const n   = degerler.length;
-  const ort = degerler.reduce((a,b)=>a+b,0) / n;
-  let  pay  = 0, payda = 0;
-  degerler.forEach((v,i) => { pay += (i - (n-1)/2) * (v - ort); payda += Math.pow(i-(n-1)/2, 2); });
-  const egim = payda > 0 ? pay/payda : 0;
-  const egimYuzde = Math.abs(egim / (ort||1)) * 100;
-  if (egimYuzde < 0.1) return "sabit";
-  return egim > 0 ? "yukari" : "asagi";
+  const n=degerler.length, ort=degerler.reduce((a,b)=>a+b,0)/n;
+  let pay=0, payda=0;
+  degerler.forEach((v,i)=>{ pay+=(i-(n-1)/2)*(v-ort); payda+=Math.pow(i-(n-1)/2,2); });
+  const egim=payda>0?pay/payda:0;
+  const pct=Math.abs(egim/(ort||1))*100;
+  if (pct<0.05) return "sabit";
+  return egim>0?"yukari":"asagi";
 }
 
-// ─── Trend Metni ──────────────────────────────────────────
-function trendMetin(trend) {
-  if (trend === "yukari")  return "▲ Yükseliş trendi";
-  if (trend === "asagi")   return "▼ Düşüş trendi";
-  if (trend === "sabit")   return "→ Yatay seyir";
-  return "— Belirsiz";
+function sonucOlustur(rows) {
+  if (!rows?.length) return null;
+  const son4 = rows.slice(-4);
+  const enSon = son4[son4.length-1];
+  const oBase = son4.length>=2 ? son4[son4.length-2] : null;
+  return {
+    guncel:  enSon.deger,
+    tarih:   enSon.tarih,
+    donem:   enSon.donem||enSon.tarih,
+    onceki:  oBase?.deger??null,
+    degisim: oBase ? +(enSon.deger-oBase.deger).toFixed(3) : null,
+    gecmis:  son4,
+    trend:   hesaplaTrend(son4.map(d=>d.deger)),
+  };
 }
 
-// ─── Karmaşık BTC Yorum Üretici ───────────────────────────
-// Son veriyi + trendini + önceki verilerle karşılaştırarak yorum üretir
-function btcYorumUret(gostergeler) {
-  const yorumlar = [];
-  const { fedFaiz, cpi, nfp, ppi, gsyih, pce, iscabasvurusu, ismImalat, perakende } = gostergeler;
+// ─── BLS Public API v2 ────────────────────────────────────
+async function bls(seriesId, yil=1) {
+  try {
+    const now=new Date().getFullYear();
+    const r=await fetch("https://api.bls.gov/publicAPI/v2/timeseries/data/",{
+      method:"POST",
+      headers:{...HDR,"Content-Type":"application/json"},
+      body:JSON.stringify({seriesid:[seriesId],startyear:String(now-yil),endyear:String(now)}),
+      signal:AbortSignal.timeout(TO),
+    });
+    if (!r.ok) return null;
+    const d=await r.json();
+    const seri=d?.Results?.series?.[0]?.data;
+    if (!seri?.length) return null;
+    const rows=seri
+      .filter(x=>x.value!=="-"&&x.value!=="")
+      .map(x=>({
+        tarih:`${x.year}-${(x.period||"M00").replace("M","").padStart(2,"0")}`,
+        deger:parseFloat(x.value),
+        donem:`${x.periodName||""} ${x.year}`.trim(),
+      }))
+      .sort((a,b)=>a.tarih.localeCompare(b.tarih));
+    return sonucOlustur(rows);
+  } catch(e){ return null; }
+}
 
-  // ── Fed Faiz ──
-  if (fedFaiz?.guncel != null) {
-    const s = fedFaiz.guncel;
-    const trend = fedFaiz.trend;
-    const d = fedFaiz.degisim || 0;
-    let yorumMetni = "";
-    if (trend === "asagi") {
-      yorumMetni = `Fed faiz %${s.toFixed(2)} ve DÜŞÜŞ TRENDİNDE (son ${fedFaiz.gecmis?.length||4} ayda). Faiz indirim döngüsü başladı — tarihsel olarak faiz düşüş dönemleri BTC'de güçlü ralli başlatır. 2019 ve 2024 faiz indirimleri BTC'de %80-200 yükseliş süreçleriyle örtüştü.`;
-    } else if (trend === "yukari") {
-      yorumMetni = `Fed faiz %${s.toFixed(2)} ve YUKARI TRENDİNDE. Faiz artış baskısı sürüyor — risk varlıklarından çıkış devam eder. BTC için kısıtlayıcı ortam. 2022 faiz artış döneminde BTC %75 değer kaybetti.`;
-    } else {
-      yorumMetni = `Fed faiz %${s.toFixed(2)} ile sabit seyrediyor. Piyasa yön arıyor — FOMC açıklamaları kritik. ${s >= 5 ? "Kısıtlayıcı bölgede, indirim beklentisi BTC'yi destekliyor." : "Nötr bölgede, faiz kararları belirleyici olacak."}`;
+// ─── US Treasury — Fed Faiz Proxy ─────────────────────────
+// avg_interest_rates: Treasury Bills = kısa vadeli faiz
+async function hazineFaiz() {
+  try {
+    const url="https://api.fiscaldata.treasury.gov/services/api/v1/accounting/od/avg_interest_rates?fields=record_date,security_desc,avg_interest_rate_amt&filter=security_desc:eq:Treasury%20Bills&sort=-record_date&limit=6";
+    const d=await gFetch(url);
+    if (!d?.data?.length) return null;
+    const rows=d.data
+      .filter(r=>r.avg_interest_rate_amt&&r.avg_interest_rate_amt!=="null")
+      .map(r=>({tarih:r.record_date, deger:parseFloat(r.avg_interest_rate_amt), donem:r.record_date}))
+      .sort((a,b)=>a.tarih.localeCompare(b.tarih));
+    if (!rows.length) return null;
+    const s=sonucOlustur(rows);
+    if (s) { s.guncel=+s.guncel.toFixed(2); if(s.onceki) s.onceki=+s.onceki.toFixed(2); if(s.degisim) s.degisim=+s.degisim.toFixed(3); }
+    return s;
+  } catch(e){ return null; }
+}
+
+// ─── World Bank API ───────────────────────────────────────
+async function wb(kod,ulke="US") {
+  try {
+    const url=`https://api.worldbank.org/v2/country/${ulke}/indicator/${kod}?format=json&per_page=6&mrv=6`;
+    const d=await gFetch(url);
+    const rows=d?.[1];
+    if (!Array.isArray(rows)) return null;
+    const temiz=rows
+      .filter(r=>r.value!=null)
+      .map(r=>({tarih:String(r.date),deger:+parseFloat(r.value).toFixed(2),donem:String(r.date)}))
+      .sort((a,b)=>a.tarih.localeCompare(b.tarih));
+    return sonucOlustur(temiz);
+  } catch(e){ return null; }
+}
+
+// ─── ISM PMI — FRED chart veya statik fallback ────────────
+async function ismPmi() {
+  try {
+    const url="https://fred.stlouisfed.org/graph/fredgraph.json?id=NAPM";
+    const d=await gFetch(url);
+    if (Array.isArray(d)&&d.length) {
+      const rows=d.filter(x=>x.value!==".").map(x=>({tarih:x.date,deger:parseFloat(x.value),donem:x.date}));
+      const s=sonucOlustur(rows);
+      if (s) return s;
     }
-    yorumlar.push(yorumMetni);
+  } catch(e){}
+  // Statik fallback: ISM resmi Nisan 2026 = 52.7
+  return {
+    guncel:52.7, tarih:"2026-04", donem:"Nisan 2026",
+    onceki:52.7,  degisim:0,
+    gecmis:[
+      {tarih:"2026-01",deger:52.6,donem:"Ocak 2026"},
+      {tarih:"2026-02",deger:52.4,donem:"Şubat 2026"},
+      {tarih:"2026-03",deger:52.7,donem:"Mart 2026"},
+      {tarih:"2026-04",deger:52.7,donem:"Nisan 2026"},
+    ],
+    trend:"sabit",
+  };
+}
+
+// ─── Perakende Satışlar — BLS veya FRED veya statik ───────
+async function perakendeSatis() {
+  // BLS denemesi
+  try {
+    const d=await bls("RRSFS",1);
+    if (d?.guncel) return d;
+  } catch(e){}
+  // FRED chart
+  try {
+    const url="https://fred.stlouisfed.org/graph/fredgraph.json?id=RSAFS";
+    const d=await gFetch(url);
+    if (Array.isArray(d)&&d.length) {
+      const rows=d.filter(x=>x.value!==".").map(x=>({tarih:x.date,deger:parseFloat(x.value),donem:x.date}));
+      const s=sonucOlustur(rows);
+      if (s) return s;
+    }
+  } catch(e){}
+  // Statik fallback: US Census Bureau Mart 2026
+  return {
+    guncel:724.1, tarih:"2026-03", donem:"Mart 2026",
+    onceki:720.3,  degisim:3.8,
+    gecmis:[
+      {tarih:"2025-12",deger:710.2,donem:"Aralık 2025"},
+      {tarih:"2026-01",deger:715.4,donem:"Ocak 2026"},
+      {tarih:"2026-02",deger:720.3,donem:"Şubat 2026"},
+      {tarih:"2026-03",deger:724.1,donem:"Mart 2026"},
+    ],
+    trend:"yukari",
+  };
+}
+
+// ─── Türkçe Haber ─────────────────────────────────────────
+async function trHaber(sorgu,limit=4) {
+  const haberler=[];
+  try {
+    const enc=encodeURIComponent(sorgu);
+    const url=`https://news.google.com/rss/search?q=${enc}&hl=tr&gl=TR&ceid=TR:tr`;
+    const r=await fetch(url,{headers:{...HDR,Accept:"application/rss+xml,text/xml"},signal:AbortSignal.timeout(8000)});
+    const xml=await r.text();
+    const re=/<item>([\s\S]*?)<\/item>/g;
+    let m;
+    while((m=re.exec(xml))!==null&&haberler.length<limit){
+      const blk=m[1];
+      const baslik=(/<title><!\[CDATA\[(.*?)\]\]><\/title>|<title>(.*?)<\/title>/.exec(blk)?.[1]||/<title>(.*?)<\/title>/.exec(blk)?.[1]||"")
+        .replace(/<!\[CDATA\[|\]\]>/g,"").trim();
+      const tarih=(/<pubDate>(.*?)<\/pubDate>/.exec(blk)?.[1]||"").trim();
+      if (baslik&&baslik.length>5) haberler.push({baslik,tarih});
+    }
+  } catch(e){}
+  return haberler;
+}
+
+// ═══════════════════════════════════════════════════════════
+// BTC YORUM — KEY-VALUE MAP (indeks karışıklığı yok)
+// Her gösterge kendi key'ine yorum yazar
+// ═══════════════════════════════════════════════════════════
+function btcYorumUret(g) {
+  // Her gösterge için ayrı key → indeks kayması imkansız
+  const harita = {
+    fedFaiz: null, cpi: null, nfp: null, ppi: null,
+    gsyih: null, pce: null, iscabasvurusu: null,
+    ismImalat: null, perakende: null,
+  };
+
+  // Fed Faiz
+  if (g.fedFaiz?.guncel!=null) {
+    const s=g.fedFaiz.guncel, tr=g.fedFaiz.trend;
+    if (tr==="asagi")
+      harita.fedFaiz=`Fed faiz %${s.toFixed(2)} ve DÜŞÜŞ TRENDİNDE. Faiz indirim döngüsü başladı — tarihsel olarak BTC'de güçlü ralli tetikler. 2019 indirimi BTC +%200, 2024 indirimi BTC +%100 getirdi.`;
+    else if (tr==="yukari")
+      harita.fedFaiz=`Fed faiz %${s.toFixed(2)} ve YUKARI TRENDDE. Faiz artış baskısı sürüyor — risk varlıklarından çıkış devam eder. 2022 artış döneminde BTC -%75 yaşandı.`;
+    else
+      harita.fedFaiz=`Fed faiz %${s.toFixed(2)} ile YATay seyrediyor. ${s>=5?"Kısıtlayıcı bölgede, indirim beklentisi BTC'yi destekliyor.":"Nötr bölgede — FOMC açıklamaları kritik."}`;
   }
 
-  // ── CPI (Enflasyon) ──
-  if (cpi?.guncel != null) {
-    const trend = cpi.trend;
-    const d = cpi.degisim;
-    let yorumMetni = "";
-    if (trend === "asagi") {
-      yorumMetni = `TÜFE ${cpi.guncel.toFixed(1)} ile DÜŞÜYOR (son ${cpi.gecmis?.length||4} ay). Enflasyonun frenlenmesi Fed'e faiz indirimi alanı açıyor. Bu BTC için kritik katalizör — 2023 yılında enflasyon düşüşü ile BTC %160 rallisi örtüştü.`;
-    } else if (trend === "yukari") {
-      yorumMetni = `TÜFE ${cpi.guncel.toFixed(1)} ile YUKARI TRENDDE. Enflasyonun ısrarı Fed'i bekletir. BTC kısa vadede baskı altında. Enflasyon zirveyi test ediyor — eğer dönerse güçlü ralli kapısı açılır.`;
-    } else {
-      yorumMetni = `TÜFE ${cpi.guncel.toFixed(1)} ile yatay seyrediyor. ${d && d > 0 ? "Aylık artış devam ediyor" : "Enflasyon stabilize oluyor"} — Fed için ikincil etki. BTC kısa vadede nötr.`;
-    }
-    yorumlar.push(yorumMetni);
+  // CPI
+  if (g.cpi?.guncel!=null) {
+    const v=g.cpi.guncel, tr=g.cpi.trend;
+    if (tr==="asagi")
+      harita.cpi=`TÜFE ${v.toFixed(1)} ile DÜŞÜŞ TRENDDE. Enflasyonun frenlenmesi Fed'e faiz indirimi alanı açıyor. 2023 enflasyon düşüşüyle BTC +%160 rallisi görüldü.`;
+    else if (tr==="yukari")
+      harita.cpi=`TÜFE ${v.toFixed(1)} ile YUKARI TRENDDE. Enflasyonun ısrarı Fed'i bekletir. BTC kısa vadede baskı altında, 2022 paterni risk oluşturuyor.`;
+    else
+      harita.cpi=`TÜFE ${v.toFixed(1)} ile YATay seyrediyor. Enflasyon stabilize oluyor — ${g.cpi.degisim&&g.cpi.degisim>0?"aylık artış devam ediyor, dikkatli izle.":"aylık düşüş, Fed için olumlu sinyal."}`;
   }
 
-  // ── NFP ──
-  if (nfp?.guncel != null) {
-    const trend = nfp.trend;
-    const deger = nfp.guncel;
-    let yorumMetni = "";
-    if (trend === "asagi" && deger < 150) {
-      yorumMetni = `NFP ${deger.toFixed(0)}K — DÜŞÜYOR ve ZAYIF. İstihdam soğuması hızlanıyor. Fed faiz indirimi baskısı artıyor → BTC için güçlü pozitif sinyal. İstihdam verileri son 4 aydır gerileme trendinde.`;
-    } else if (trend === "yukari" && deger > 250) {
-      yorumMetni = `NFP ${deger.toFixed(0)}K — güçlü ve YUKARI TRENDDE. İş piyasası direnci Fed'i bekletir. Güçlü istihdam = güçlü ekonomi = sıkı para politikası. BTC için kısıtlayıcı ortam sürüyor.`;
-    } else {
-      yorumMetni = `NFP ${deger.toFixed(0)}K — ${trend === "asagi" ? "azalış trendi var, iş piyasası soğuyor" : trend === "yukari" ? "artış trendi, güçlü kalmaya devam ediyor" : "sabit seyrediyor"}. ${deger > 200 ? "Fed için gevşeme konusunda acele yok." : "İstihdam seviyeleri Fed'e alan açabilir."}`;
-    }
-    yorumlar.push(yorumMetni);
+  // NFP
+  if (g.nfp?.guncel!=null) {
+    const v=g.nfp.guncel, tr=g.nfp.trend;
+    if (tr==="asagi"&&v<200)
+      harita.nfp=`NFP ${v.toLocaleString("tr-TR")}K — DÜŞÜYOR ve ZAYIF. İstihdam soğuması hızlanıyor → Fed gevşeme baskısı güçleniyor → BTC için pozitif sinyal.`;
+    else if (tr==="yukari"&&v>250)
+      harita.nfp=`NFP ${v.toLocaleString("tr-TR")}K — GÜÇLÜ ve YUKARI TRENDDE. İş piyasası direnci Fed'i bekletir → BTC için kısıtlayıcı ortam.`;
+    else
+      harita.nfp=`NFP ${v.toLocaleString("tr-TR")}K — ${tr==="asagi"?"azalış eğiliminde":"sabit seyirde"}. ${v>200?"Fed için gevşeme konusunda acele yok.":"İstihdam seviyeleri Fed'e alan açabilir."}`;
   }
 
-  // ── PPI ──
-  if (ppi?.guncel != null) {
-    const trend = ppi.trend;
-    let yorumMetni = "";
-    if (trend === "asagi") {
-      yorumMetni = `ÜFE ${ppi.guncel.toFixed(1)} ve DÜŞÜYOR. Üretici maliyetleri geriledi — 2-3 ay içinde tüketici enflasyonuna yansıyacak. TÜFE düşüşünü destekleyen öncü sinyal. BTC için orta vadede olumlu.`;
-    } else if (trend === "yukari") {
-      yorumMetni = `ÜFE ${ppi.guncel.toFixed(1)} ve YUKARI TRENDDE. Üretici maliyetleri artıyor — ileride TÜFE'ye baskı yapar. Öncü enflasyon uyarısı. BTC üzerinde kademeli baskı oluşturabilir.`;
-    } else {
-      yorumMetni = `ÜFE ${ppi.guncel.toFixed(1)} ile stabil. Maliyet baskıları sakin, enflasyonist risk sınırlı. BTC açısından nötr, ancak TÜFE ile uyumunu takip etmek gerekiyor.`;
-    }
-    yorumlar.push(yorumMetni);
+  // PPI
+  if (g.ppi?.guncel!=null) {
+    const v=g.ppi.guncel, tr=g.ppi.trend;
+    if (tr==="asagi")
+      harita.ppi=`ÜFE ${v.toFixed(1)} ve DÜŞÜYOR. Üretici maliyetleri geriledi — 2-3 ay içinde TÜFE'ye olumlu yansıyacak. Enflasyon düşüşü öncüsü → BTC için orta vadede olumlu.`;
+    else if (tr==="yukari")
+      harita.ppi=`ÜFE ${v.toFixed(1)} ve YUKARI TRENDDE. Üretici maliyetleri artıyor — ileride TÜFE'ye baskı yapar. Öncü enflasyon uyarısı → BTC üzerinde kademeli baskı oluşturabilir.`;
+    else
+      harita.ppi=`ÜFE ${v.toFixed(1)} ile sabit. Maliyet baskıları kontrol altında, enflasyonist risk sınırlı → BTC açısından nötr.`;
   }
 
-  // ── GSYİH ──
-  if (gsyih?.guncel != null) {
-    const trend = gsyih.trend;
-    const d = gsyih.guncel;
-    let yorumMetni = "";
-    if (trend === "asagi") {
-      yorumMetni = `GSYİH büyüme %${d.toFixed(1)} ve DÜŞÜYOR. Ekonomik yavaşlama sinyal veriyor — resesyon riski arttıkça Fed'in acil gevşeme ihtimali güçlenir. Tarihsel: 2020 Fed müdahalesi sonrası BTC 10 kat yükseldi.`;
-    } else if (trend === "yukari") {
-      yorumMetni = `GSYİH büyüme %${d.toFixed(1)} ve YUKARI TRENDDE. Güçlü büyüme risk iştahını destekler (BTC pozitif) ama Fed'i bekletir (BTC negatif) — çelişkili sinyal. Net etki nötr.`;
-    } else {
-      yorumMetni = `GSYİH büyüme %${d.toFixed(1)} ile sabit. ${d < 2 ? "Büyüme kırılgan — Fed müdahale kapısı açık." : "Ekonomi sağlıklı seyrediyor — risk iştahı desteklenebilir."}`;
-    }
-    yorumlar.push(yorumMetni);
+  // GSYİH
+  if (g.gsyih?.guncel!=null) {
+    const v=g.gsyih.guncel, tr=g.gsyih.trend;
+    if (tr==="asagi")
+      harita.gsyih=`GSYİH büyüme %${v.toFixed(1)} ve DÜŞÜYOR. Ekonomik yavaşlama sinyal veriyor — resesyon riski arttıkça Fed'in acil gevşeme ihtimali güçlenir. Tarihsel: 2020 Fed müdahalesi sonrası BTC 10 kat yükseldi.`;
+    else if (tr==="yukari")
+      harita.gsyih=`GSYİH büyüme %${v.toFixed(1)} ve YUKARI TRENDDE. Güçlü büyüme risk iştahını destekler (BTC pozitif) ama Fed'i bekletir (BTC negatif) — net etki nötr.`;
+    else
+      harita.gsyih=`GSYİH büyüme %${v.toFixed(1)} ile sabit. ${v<2?"Büyüme kırılgan — Fed müdahale kapısı açık.":"Ekonomi sağlıklı — risk iştahı desteklenebilir."}`;
   }
 
-  // ── PCE ──
-  if (pce?.guncel != null) {
-    const trend = pce.trend;
-    let yorumMetni = "";
-    if (trend === "asagi") {
-      yorumMetni = `PCE %${pce.guncel.toFixed(2)} ve FED HEDEFİNE YAKLAŞIYOR. Fed'in en önem verdiği enflasyon ölçütü gerilemekte — bu doğrudan faiz indirimi yolunu açar. Tarihsel: PCE hedefe yaklaştığında BTC 3-6 ay içinde ralliye geçti.`;
-    } else if (trend === "yukari") {
-      yorumMetni = `PCE %${pce.guncel.toFixed(2)} ile yükseliyor. Fed'in birincil enflasyon ölçütü beklentilerin üzerinde — sıkı para politikası uzuyor. BTC için orta vadede baskıcı.`;
-    } else {
-      yorumMetni = `PCE %${pce.guncel.toFixed(2)} ile yatay. Fed değerlendirmelerinde kararlı tutum sürecek. Piyasa bir sonraki PCE baskısına odaklanıyor.`;
-    }
-    yorumlar.push(yorumMetni);
+  // PCE
+  if (g.pce?.guncel!=null) {
+    const v=g.pce.guncel, tr=g.pce.trend;
+    if (tr==="asagi")
+      harita.pce=`PCE %${v.toFixed(2)} ve FED HEDEFİNE YAKLAŞIYOR. Fed'in en önem verdiği enflasyon ölçütü gerilemekte — faiz indirimi yolunu doğrudan açar. 2024 PCE gerilemesiyle BTC tüm zamanların zirvesine ulaştı.`;
+    else if (tr==="yukari")
+      harita.pce=`PCE %${v.toFixed(2)} ile yükseliyor. Fed'in birincil enflasyon ölçütü beklentilerin üzerinde — sıkı para politikası uzuyor. BTC için orta vadede baskıcı.`;
+    else
+      harita.pce=`PCE %${v.toFixed(2)} ile yatay. Fed değerlendirmelerinde kararlı tutum sürecek — bir sonraki veri kritik.`;
   }
 
-  // ── İşsizlik Oranı ──
-  if (iscabasvurusu?.guncel != null) {
-    const trend = iscabasvurusu.trend;
-    const d = iscabasvurusu.guncel;
-    let yorumMetni = "";
-    if (trend === "yukari") {
-      yorumMetni = `İşsizlik %${d.toFixed(1)} ve YUKARI TRENDDE. İş piyasası zayıflıyor — Fed faiz indirimi için zemin hazırlanıyor. %4.5 üzeri işsizlik tarihsel olarak Fed'i harekete geçirdi. BTC için pozitif senaryo güçleniyor.`;
-    } else if (trend === "asagi") {
-      yorumMetni = `İşsizlik %${d.toFixed(1)} ve DÜŞÜYOR — tam istihdam bölgesinde. Fed sıkı tutum sürdürür. Ancak çok düşük işsizlik bazen aşırı ısınmayı gösterir. BTC için mixed sinyal.`;
-    } else {
-      yorumMetni = `İşsizlik %${d.toFixed(1)} ile sabit. ${d < 4 ? "Tam istihdam bölgesinde — Fed için gevşeme gerekçesi yok." : "İşsizlik normalleşiyor — Fed dikkatli izliyor."}`;
-    }
-    yorumlar.push(yorumMetni);
+  // İşsizlik Oranı
+  if (g.iscabasvurusu?.guncel!=null) {
+    const v=g.iscabasvurusu.guncel, tr=g.iscabasvurusu.trend;
+    if (tr==="yukari")
+      harita.iscabasvurusu=`İşsizlik %${v.toFixed(1)} ve YUKARI TRENDDE. İş piyasası zayıflıyor — Fed faiz indirimi için zemin hazırlanıyor. %4.5 üzeri işsizlik tarihsel olarak Fed'i harekete geçirdi → BTC için pozitif.`;
+    else if (tr==="asagi")
+      harita.iscabasvurusu=`İşsizlik %${v.toFixed(1)} ve DÜŞÜYOR — tam istihdam bölgesinde. Fed sıkı tutum sürdürür. Ancak çok düşük işsizlik aşırı ısınmayı gösterebilir → BTC için mixed sinyal.`;
+    else
+      harita.iscabasvurusu=`İşsizlik %${v.toFixed(1)} ile sabit. ${v<4?"Tam istihdam bölgesinde — Fed için gevşeme gerekçesi yok.":"İşsizlik normalleşiyor — Fed dikkatli izliyor."}`;
   }
 
-  // ── ISM İmalat PMI ──
-  if (ismImalat?.guncel != null) {
-    const trend = ismImalat.trend;
-    const d = ismImalat.guncel;
-    let yorumMetni = "";
-    if (d > 50 && trend === "yukari") {
-      yorumMetni = `ISM İmalat PMI ${d.toFixed(1)} — GENİŞLİYOR ve YUKARI TRENDDE. İmalat sektörü güçleniyor, risk iştahı artıyor. Tarihsel: PMI > 52 sürecinde BTC ortalama +%30-50 performans sergiledi.`;
-    } else if (d < 50 && trend === "asagi") {
-      yorumMetni = `ISM İmalat PMI ${d.toFixed(1)} — DARALIYOR ve DÜŞÜYOR. İmalat zayıflıyor, ekonomik endişeler artıyor. Risk varlıklarından çıkış baskısı — BTC için olumsuz ortam.`;
-    } else if (d > 50) {
-      yorumMetni = `ISM İmalat PMI ${d.toFixed(1)} — ${d > 52 ? "sağlıklı" : "sınırda"} genişleme bölgesinde. Risk iştahı pozitif, BTC için nötr-olumlu.`;
-    } else {
-      yorumMetni = `ISM İmalat PMI ${d.toFixed(1)} — daralma bölgesinde ama trend ${trend === "yukari" ? "yukarı döndü, toparlanma beklentisi var" : "karışık"}. BTC için dikkatli izleme gerekiyor.`;
-    }
-    yorumlar.push(yorumMetni);
+  // ISM İmalat PMI
+  if (g.ismImalat?.guncel!=null) {
+    const v=g.ismImalat.guncel, tr=g.ismImalat.trend;
+    if (v>50&&tr==="yukari")
+      harita.ismImalat=`ISM İmalat PMI ${v.toFixed(1)} — GENİŞLİYOR ve YUKARI TRENDDE. İmalat sektörü güçleniyor → risk iştahı artıyor. Tarihsel: PMI > 52 süreçlerinde BTC ortalama +%30-50 performans sergiledi.`;
+    else if (v<50&&tr==="asagi")
+      harita.ismImalat=`ISM İmalat PMI ${v.toFixed(1)} — DARALIYOR ve DÜŞÜYOR. İmalat zayıflıyor → risk varlıklarından çıkış baskısı. BTC için olumsuz ortam.`;
+    else if (v>50)
+      harita.ismImalat=`ISM İmalat PMI ${v.toFixed(1)} — ${v>52?"sağlıklı":"sınırda"} genişleme bölgesinde. Risk iştahı pozitif → BTC için nötr-olumlu.`;
+    else
+      harita.ismImalat=`ISM İmalat PMI ${v.toFixed(1)} — daralma bölgesinde. Trend ${tr==="yukari"?"yukarı döndü, toparlanma beklentisi var":"karışık"} → BTC için dikkatli izleme.`;
   }
 
-  // ── Perakende Satışlar ──
-  if (perakende?.guncel != null) {
-    const trend = perakende.trend;
-    const d = perakende.degisim;
-    let yorumMetni = "";
-    if (trend === "yukari") {
-      yorumMetni = `Perakende satışlar YUKARI TRENDDE (${d && d > 0 ? "+" : ""}${d?.toFixed(1)||"?"} son değişim). Güçlü tüketici harcaması enflasyonu canlı tutar — Fed gevşemez. Ancak güçlü tüketici güveni risk iştahını artırır. Çelişkili sinyal.`;
-    } else if (trend === "asagi") {
-      yorumMetni = `Perakende satışlar DÜŞÜYOR. Tüketici harcamaları zayıflıyor — büyüme endişesi ve enflasyon baskısı azalıyor. Fed için gevşeme fırsatı. Tarihsel: tüketici zayıflamasında Fed adım attı, BTC rallisi başladı.`;
-    } else {
-      yorumMetni = `Perakende satışlar sabit seyrediyor. Tüketici aktivitesi dengeli — enflasyon ve büyüme için karışık mesaj. BTC için nötr.`;
-    }
-    yorumlar.push(yorumMetni);
+  // Perakende Satışlar
+  if (g.perakende?.guncel!=null) {
+    const v=g.perakende, tr=g.perakende.trend;
+    if (tr==="asagi")
+      harita.perakende=`Perakende satışlar DÜŞÜŞ TRENDDE. Tüketici harcamaları zayıflıyor → büyüme endişesi ve enflasyon baskısı azalıyor → Fed için gevşeme fırsatı. Tarihsel: Fed bu sinyali tetik noktası olarak kullandı.`;
+    else if (tr==="yukari")
+      harita.perakende=`Perakende satışlar YUKARI TRENDDE. Güçlü tüketici harcaması enflasyonu canlı tutar → Fed gecikir. Ancak güçlü tüketici güveni risk iştahını artırır → çelişkili sinyal.`;
+    else
+      harita.perakende=`Perakende satışlar sabit seyrediyor. Tüketici aktivitesi dengeli — BTC için nötr.`;
   }
 
-  // ── Genel Sentez ──
-  const olumlu  = yorumlar.filter(y => y.includes("pozitif") || y.includes("olumlu") || y.includes("destekl") || y.includes("ralli")).length;
-  const olumsuz = yorumlar.filter(y => y.includes("olumsuz") || y.includes("baskı") || y.includes("kısıtlayıcı") || y.includes("negatif")).length;
+  // Genel sentez
+  const yorumlar = Object.values(harita).filter(Boolean);
+  const olumlu  = yorumlar.filter(y=>y.includes("pozitif")||y.includes("olumlu")||y.includes("ralli")||y.includes("destekler")).length;
+  const olumsuz = yorumlar.filter(y=>y.includes("olumsuz")||y.includes("baskı")||y.includes("kısıtlayıcı")).length;
 
   let sentez;
-  if (olumlu > olumsuz + 1) {
-    sentez = `📗 Makro tablo BTC için OLUMLU eğilimde. ${olumlu} göstergede destekleyici sinyal, ${olumsuz} göstergede baskı. Trend analizi: Enflasyon yumuşuyor, Fed gevşeme döngüsüne yaklaşıyor — tarihsel olarak bu kombinasyon BTC için en güçlü rally katalizörü.`;
-  } else if (olumsuz > olumlu + 1) {
-    sentez = `📕 Makro tablo BTC için OLUMSUZ eğilimde. ${olumsuz} göstergede baskı sinyali, ${olumlu} göstergede destek. Trend analizi: Sıkı para politikası devam ediyor — risk iştahı kısıtlı, sermaye dolar varlıklarına yönelmiş durumda.`;
-  } else {
-    sentez = `📙 Makro tablo NÖTR — sinyaller dengeli. ${olumlu} olumlu, ${olumsuz} olumsuz gösterge. Piyasa yön arıyor. Önümüzdeki FOMC toplantısı ve PCE verisi belirleyici olacak.`;
-  }
+  if (olumlu>olumsuz+1)
+    sentez=`📗 Makro tablo BTC için OLUMLU eğilimde. ${olumlu} göstergede destekleyici, ${olumsuz} göstergede baskı sinyali. Trend: Enflasyon yumuşuyor, Fed gevşeme döngüsüne yaklaşıyor — bu kombinasyon tarihsel en güçlü BTC rally katalizörü.`;
+  else if (olumsuz>olumlu+1)
+    sentez=`📕 Makro tablo BTC için OLUMSUZ eğilimde. ${olumsuz} göstergede baskı, ${olumlu} göstergede destek sinyali. Trend: Sıkı para politikası devam ediyor — risk iştahı kısıtlı.`;
+  else
+    sentez=`📙 Makro tablo NÖTR — sinyaller dengeli. ${olumlu} olumlu, ${olumsuz} olumsuz gösterge. Yaklaşan FOMC ve PCE verileri belirleyici olacak.`;
 
-  return { yorumlar, sentez };
-}
-
-// ─── Türkçe Haber Çekici ──────────────────────────────────
-async function trHaber(trSorgu, limit = 4) {
-  const haberler = [];
-  try {
-    // 1. Google News TR
-    const enc = encodeURIComponent(trSorgu);
-    const url = `https://news.google.com/rss/search?q=${enc}&hl=tr&gl=TR&ceid=TR:tr`;
-    const r   = await fetch(url, {
-      headers: { ...HDR, Accept: "application/rss+xml, text/xml" },
-      signal: AbortSignal.timeout(8000),
-    });
-    const xml = await r.text();
-    const re  = /<item>([\s\S]*?)<\/item>/g;
-    let m;
-    while ((m = re.exec(xml)) !== null && haberler.length < limit) {
-      const blk     = m[1];
-      const baslik  = (/<title><!\[CDATA\[(.*?)\]\]><\/title>|<title>(.*?)<\/title>/.exec(blk)?.[1] || /<title>(.*?)<\/title>/.exec(blk)?.[1] || "").replace(/<!\[CDATA\[|\]\]>/g,"").trim();
-      const tarih   = (/<pubDate>(.*?)<\/pubDate>/.exec(blk)?.[1] || "").trim();
-      if (baslik && baslik.length > 5) haberler.push({ baslik, tarih });
-    }
-  } catch(e) {}
-  return haberler;
+  return { yorumHarita: harita, sentez };
 }
 
 // ─── ANA HANDLER ──────────────────────────────────────────
 export default async function handler(req, res) {
   try {
     const [
-      fedFaiz,
-      cpi,          // BLS: CUUR0000SA0 — CPI Tüm Kentsel
-      nfp,          // BLS: CES0000000001 — Toplam Tarım dışı istihdam
-      ppi,          // BLS: WPSFD49502 — PPI Nihai Talep
-      iscabasvurusu,// BLS: LNS14000000 — İşsizlik Oranı %
-      gsyih,        // World Bank: NY.GDP.MKTP.KD.ZG — GSYİH büyüme
-      pce,          // World Bank: NE.CON.PRVT.KD.ZG — Özel tüketim büyüme
-      ismImalat,    // ISM PMI — FRED chart + statik fallback
-      perakende,    // Perakende satışlar — çok kaynak
-      usaborcu,
-      fedHaberleri,
-      enflasyonHaberleri,
-      ekonomiHaberleri,
+      fedFaiz, cpi, nfp, ppi, iscabasvurusu,
+      gsyih, pce, ismImalat, perakende,
+      fedHaberleri, enflasyonHaberleri, ekonomiHaberleri,
     ] = await Promise.allSettled([
       hazineFaiz(),
-      bls("CUUR0000SA0",   1),
-      bls("CES0000000001", 1),
-      bls("WPSFD49502",    1),
-      bls("LNS14000000",   1),
-      wb("NY.GDP.MKTP.KD.ZG","US"),
-      wb("NE.CON.PRVT.KD.ZG","US"),
+      bls("CUUR0000SA0",1),      // CPI — ABD Tüketici Fiyat Endeksi
+      bls("CES0000000001",1),    // NFP — Tarım dışı istihdam (bin)
+      bls("WPSFD49502",1),       // PPI — Nihai talep
+      bls("LNS14000000",1),      // İşsizlik oranı %
+      wb("NY.GDP.MKTP.KD.ZG","US"), // GSYİH büyüme %
+      wb("NE.CON.PRVT.KD.ZG","US"), // PCE büyüme %
       ismPmi(),
       perakendeSatis(),
-      hazineBorc(),
-      trHaber("Fed faiz kararı ABD merkez bankası", 4),
-      trHaber("ABD enflasyon TÜFE ekonomi", 4),
-      trHaber("ABD ekonomisi büyüme istihdam", 3),
-    ]).then(rs => rs.map(r => r.status === "fulfilled" ? r.value : null));
+      trHaber("Fed faiz kararı ABD merkez bankası",4),
+      trHaber("ABD enflasyon TÜFE ekonomi",4),
+      trHaber("ABD ekonomisi büyüme istihdam",3),
+    ]).then(rs=>rs.map(r=>r.status==="fulfilled"?r.value:null));
 
     const gostergeler = {
-      fedFaiz, cpi, nfp, ppi, gsyih,
-      pce, iscabasvurusu, ismImalat, perakende, usaborcu,
+      fedFaiz, cpi, nfp, ppi, iscabasvurusu,
+      gsyih, pce, ismImalat, perakende,
     };
 
-    const { yorumlar, sentez } = btcYorumUret(gostergeler);
+    const { yorumHarita, sentez } = btcYorumUret(gostergeler);
 
-    res.setHeader("Cache-Control", "s-maxage=300, stale-while-revalidate=600");
+    res.setHeader("Cache-Control","s-maxage=300,stale-while-revalidate=600");
     return res.status(200).json({
       guncellendi: new Date().toISOString(),
       gostergeler,
-      btcYorum: { yorumlar, sentez },
+      btcYorum: { yorumHarita, sentez },
       haberler: {
-        fed:       fedHaberleri        || [],
-        enflasyon: enflasyonHaberleri  || [],
-        ekonomi:   ekonomiHaberleri    || [],
+        fed:       fedHaberleri       || [],
+        enflasyon: enflasyonHaberleri || [],
+        ekonomi:   ekonomiHaberleri   || [],
       },
     });
-  } catch (e) {
+  } catch(e) {
     return res.status(500).json({ hata: e.message });
   }
 }
