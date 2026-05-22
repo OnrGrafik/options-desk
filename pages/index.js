@@ -359,8 +359,12 @@ function MakroSayfasi() {
 
         {/* 9 Gösterge Kartları */}
         <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:20}}>
-          {gostergeler.map((gs,idx) => (
-            <GostergeKarti key={gs.id} gs={gs} yorum={veri?.btcYorum?.yorumlar?.[idx]||null}/>
+          {gostergeler.map((gs) => (
+            <GostergeKarti
+              key={gs.id}
+              gs={gs}
+              yorum={veri?.btcYorum?.yorumHarita?.[gs.id] || null}
+            />
           ))}
         </div>
 
@@ -651,70 +655,114 @@ function KriptoEtkiTablosu({ veri }) {
 // ─── Gösterge Kartı ───────────────────────────────────────
 function GostergeKarti({ gs, yorum }) {
   const v = gs.veri;
-  if (!v) return (
-    <div style={{background:"var(--surface)",border:"1px solid var(--hairline)",padding:"18px 20px",minHeight:200}}>
-      <div style={{fontFamily:"var(--sans)",fontSize:11,fontWeight:700,color:"var(--text)",marginBottom:4}}>{gs.baslik}</div>
-      <div style={{fontFamily:"var(--sans)",fontSize:10,color:"var(--text-mute)",marginBottom:12}}>{gs.kaynak}</div>
-      <div style={{color:"var(--text-mute)",fontSize:24,fontFamily:"var(--serif)"}}>—</div>
-      <div style={{fontFamily:"var(--sans)",fontSize:10,color:"var(--text-mute)",marginTop:8}}>Veri alınamadı</div>
+
+  // Null durumu
+  if (!v || v.guncel == null) return (
+    <div style={{background:"var(--surface)",border:"1px solid var(--hairline)",padding:"18px 20px",minHeight:180,display:"flex",flexDirection:"column",gap:8}}>
+      <div style={{fontFamily:"var(--sans)",fontSize:11,fontWeight:700,color:"var(--text)"}}>{gs.baslik}</div>
+      <div style={{fontFamily:"var(--sans)",fontSize:9,fontWeight:600,color:"var(--text-mute)",letterSpacing:"0.08em",textTransform:"uppercase"}}>{gs.kaynak}</div>
+      <div style={{fontFamily:"var(--serif)",fontSize:28,color:"var(--text-mute)",marginTop:8}}>—</div>
+      <div style={{fontFamily:"var(--sans)",fontSize:10,color:"var(--text-mute)"}}>Veri alınamadı</div>
     </div>
   );
 
-  const degisim = v.degisim;
-  const yukari  = degisim > 0;
-  // ters=true: artış olumsuz (enflasyon, NFP vb.)
-  const olumlu  = gs.ters ? !yukari : yukari;
-  const degisimRengi = degisim==null?"var(--text-mute)":olumlu?"var(--pos)":"var(--neg)";
-  const guncelRengi  = degisim==null?"var(--text)":olumlu?"var(--pos)":"var(--neg)";
+  const degisim  = v.degisim;
+  const trend    = v.trend;
+  // Trend bazlı renk (degisim tek başına yanıltıcı olabilir — ters göstergeler için)
+  // gs.ters=true → artış kötü (CPI, NFP, PPI, PCE, perakende)
+  // gs.ters=false → artış iyi (Fed faiz: düşüş iyi, ISM: yüksek iyi)
+  const trendOlumlu = gs.ters
+    ? (trend === "asagi")   // ters göstergede düşüş olumlu
+    : (trend === "yukari"); // normal göstergede yükseliş olumlu
+  const guncelRengi  = trend == null || trend === "belirsiz" ? "var(--text)"
+    : trendOlumlu ? "var(--pos)" : "var(--neg)";
+  const degisimRengi = degisim == null ? "var(--text-mute)"
+    : (gs.ters ? (degisim < 0 ? "var(--pos)" : "var(--neg)") : (degisim > 0 ? "var(--pos)" : "var(--neg)"));
 
-  // Mini bar chart — son 4 kayıt
+  // Mini bar chart — min-max normalize (relative, yakın değerler görünür olur)
   const gecmis = v.gecmis || [];
-  const barMax = Math.max(...gecmis.map(d=>Math.abs(d.deger)),1);
+  const vals   = gecmis.map(d => d.deger);
+  const minVal = Math.min(...vals);
+  const maxVal = Math.max(...vals);
+  const rangeV = maxVal - minVal || 1;
+
+  // Değer formatı: göstergeye özel
+  const fmtDeger = (n) => {
+    if (n == null) return "—";
+    // Büyük sayılar (NFP binlik, perakende milyarlık)
+    if (Math.abs(n) >= 100000) return (n/1000).toLocaleString("tr-TR",{maximumFractionDigits:0})+"K";
+    if (Math.abs(n) >= 1000)   return n.toLocaleString("tr-TR",{maximumFractionDigits:0});
+    if (Math.abs(n) >= 100)    return n.toLocaleString("tr-TR",{maximumFractionDigits:1});
+    return n.toLocaleString("tr-TR",{maximumFractionDigits:2});
+  };
+  const fmtDegisim = (n) => {
+    if (n == null) return null;
+    if (Math.abs(n) >= 1000) return (n/1000).toFixed(1)+"K";
+    if (Math.abs(n) >= 10)   return n.toFixed(1);
+    return n.toFixed(2);
+  };
+
+  const trendSimge = trend==="yukari"?"▲":trend==="asagi"?"▼":"→";
+  const trendYazi  = trend==="yukari"?"Yükseliş":trend==="asagi"?"Düşüş":trend==="sabit"?"Yatay":"—";
 
   return (
-    <div style={{background:"var(--surface)",border:"1px solid var(--hairline)",padding:"18px 20px",display:"flex",flexDirection:"column",gap:12}}>
-      {/* Başlık */}
+    <div style={{background:"var(--surface)",border:`1px solid var(--hairline)`,borderTop:`2px solid ${guncelRengi}`,padding:"16px 18px",display:"flex",flexDirection:"column",gap:10}}>
+
+      {/* Başlık + kaynak */}
       <div>
         <div style={{fontFamily:"var(--sans)",fontSize:11,fontWeight:700,color:"var(--text)",marginBottom:2}}>{gs.baslik}</div>
-        <div style={{fontFamily:"var(--sans)",fontSize:9,fontWeight:600,color:"var(--text-mute)",letterSpacing:"0.08em",textTransform:"uppercase"}}>{gs.kaynak}</div>
+        <div style={{fontFamily:"var(--sans)",fontSize:9,fontWeight:600,color:"var(--text-mute)",letterSpacing:"0.06em",textTransform:"uppercase"}}>{gs.kaynak}</div>
       </div>
 
       {/* Güncel değer + değişim */}
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-end"}}>
         <div>
-          <div style={{fontFamily:"var(--serif)",fontSize:32,fontWeight:400,color:guncelRengi,lineHeight:1}}>
-            {v.guncel.toLocaleString("tr-TR",{maximumFractionDigits:2})}{gs.birim}
+          <div style={{fontFamily:"var(--serif)",fontSize:30,fontWeight:400,color:guncelRengi,lineHeight:1,letterSpacing:"-0.01em"}}>
+            {fmtDeger(v.guncel)}{gs.birim}
           </div>
-          <div style={{fontFamily:"var(--sans)",fontSize:10,color:"var(--text-mute)",marginTop:4}}>{v.tarih}</div>
+          <div style={{fontFamily:"var(--sans)",fontSize:9,color:"var(--text-mute)",marginTop:3}}>{v.donem||v.tarih}</div>
         </div>
-        {degisim!=null && (
+        {degisim != null && (
           <div style={{textAlign:"right"}}>
-            <div style={{fontFamily:"var(--sans)",fontSize:14,fontWeight:700,color:degisimRengi}}>
-              {degisim>0?"+":""}{degisim.toLocaleString("tr-TR",{maximumFractionDigits:2})}{gs.birim}
+            <div style={{fontFamily:"var(--sans)",fontSize:13,fontWeight:700,color:degisimRengi}}>
+              {degisim > 0 ? "+" : ""}{fmtDegisim(degisim)}{gs.birim}
             </div>
-            <div style={{fontFamily:"var(--sans)",fontSize:9,color:"var(--text-mute)",marginTop:2}}>
-              önceki: {v.onceki?.toLocaleString("tr-TR",{maximumFractionDigits:2})}{gs.birim}
+            <div style={{fontFamily:"var(--sans)",fontSize:9,color:"var(--text-mute)",marginTop:1}}>
+              önceki: {fmtDeger(v.onceki)}{gs.birim}
             </div>
           </div>
         )}
       </div>
 
-      {/* Mini bar chart — son 3 ay */}
+      {/* Trend badge */}
+      {trend && trend !== "belirsiz" && (
+        <div style={{display:"flex",alignItems:"center",gap:6}}>
+          <span style={{fontFamily:"var(--sans)",fontSize:10,fontWeight:700,color:trendOlumlu?"var(--pos)":"var(--neg)"}}>
+            {trendSimge} {trendYazi} trendi
+          </span>
+        </div>
+      )}
+
+      {/* Mini bar chart — relative min-max normalize */}
       {gecmis.length > 1 && (
         <div>
-          <div style={{fontFamily:"var(--sans)",fontSize:9,fontWeight:600,color:"var(--text-mute)",letterSpacing:"0.08em",textTransform:"uppercase",marginBottom:6}}>Son {gecmis.length} Dönem</div>
-          <div style={{display:"flex",gap:4,alignItems:"flex-end",height:48}}>
-            {gecmis.map((d,i)=>{
-              const yukseklik = Math.max((Math.abs(d.deger)/barMax)*44,2);
-              const enSon = i===gecmis.length-1;
+          <div style={{fontFamily:"var(--sans)",fontSize:8,fontWeight:600,color:"var(--text-mute)",letterSpacing:"0.08em",textTransform:"uppercase",marginBottom:5}}>
+            Son {gecmis.length} Dönem
+          </div>
+          <div style={{display:"flex",gap:3,alignItems:"flex-end",height:52}}>
+            {gecmis.map((d, i) => {
+              const rel      = (d.deger - minVal) / rangeV; // 0~1 arası
+              const barH     = Math.max(rel * 40, 3);
+              const enSon    = i === gecmis.length - 1;
+              const barRenk  = enSon ? "var(--accent)" : trendOlumlu ? "var(--pos)" : "var(--neg)";
               return (
-                <div key={i} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",gap:3}}>
-                  <div style={{fontSize:8,fontFamily:"var(--sans)",color:enSon?"var(--accent)":"var(--text-mute)",fontWeight:enSon?700:400,textAlign:"center",lineHeight:1.2}}>
-                    {d.deger.toLocaleString("tr-TR",{maximumFractionDigits:1})}
+                <div key={i} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",gap:2}}>
+                  <div style={{fontFamily:"var(--sans)",fontSize:7,color:enSon?"var(--accent)":"var(--text-mute)",fontWeight:enSon?700:400,textAlign:"center",lineHeight:1.1}}>
+                    {fmtDeger(d.deger)}
                   </div>
-                  <div style={{width:"100%",height:yukseklik,background:enSon?"var(--accent)":olumlu?"var(--pos)":"var(--neg)",opacity:enSon?1:0.4,borderRadius:"1px 1px 0 0"}}/>
-                  <div style={{fontSize:8,fontFamily:"var(--sans)",color:"var(--text-mute)",textAlign:"center",lineHeight:1.2,whiteSpace:"nowrap",overflow:"hidden",maxWidth:"100%"}}>
-                    {d.tarih?.slice(0,7)}
+                  <div style={{width:"100%",height:barH,background:barRenk,opacity:enSon?1:0.45,borderRadius:"1px 1px 0 0"}}/>
+                  <div style={{fontSize:7,fontFamily:"var(--sans)",color:"var(--text-mute)",textAlign:"center",lineHeight:1.1,overflow:"hidden",maxWidth:"100%",whiteSpace:"nowrap"}}>
+                    {(d.donem||d.tarih||"").toString().slice(0,7)}
                   </div>
                 </div>
               );
@@ -723,19 +771,18 @@ function GostergeKarti({ gs, yorum }) {
         </div>
       )}
 
-      {/* Ayraç */}
       <div style={{borderTop:"1px solid var(--hairline-soft)"}}/>
 
       {/* Açıklama */}
-      <div style={{fontFamily:"var(--sans)",fontSize:10,fontWeight:400,color:"var(--text-mute)",lineHeight:1.5}}>
+      <div style={{fontFamily:"var(--sans)",fontSize:10,color:"var(--text-mute)",lineHeight:1.5}}>
         {gs.aciklama}
       </div>
 
-      {/* BTC Yorumu */}
+      {/* BTC Etkisi — yorumHarita'dan gs.id ile gelen doğru yorum */}
       {yorum && (
         <div style={{background:"var(--surface-2)",borderLeft:"2px solid var(--accent)",padding:"8px 10px"}}>
-          <div style={{fontFamily:"var(--sans)",fontSize:9,fontWeight:600,color:"var(--accent)",letterSpacing:"0.08em",textTransform:"uppercase",marginBottom:4}}>BTC Etkisi</div>
-          <div style={{fontFamily:"var(--sans)",fontSize:10,fontWeight:700,color:"var(--text-2)",lineHeight:1.5}}>{yorum}</div>
+          <div style={{fontFamily:"var(--sans)",fontSize:8,fontWeight:700,color:"var(--accent)",letterSpacing:"0.10em",textTransform:"uppercase",marginBottom:4}}>BTC Etkisi</div>
+          <div style={{fontFamily:"var(--sans)",fontSize:10,fontWeight:600,color:"var(--text-2)",lineHeight:1.5}}>{yorum}</div>
         </div>
       )}
     </div>
