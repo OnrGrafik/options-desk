@@ -364,35 +364,33 @@ function MakroSayfasi() {
           ))}
         </div>
 
-        {/* Haberler — Türkçe + İngilizce */}
-        {(veri?.haberler?.fed?.length>0||veri?.haberler?.enflasyon?.length>0) && (
+        {/* Haberler — TAMAMEN TÜRKÇE */}
+        {(veri?.haberler?.fed?.length>0||veri?.haberler?.enflasyon?.length>0||veri?.haberler?.ekonomi?.length>0) && (
           <section>
             <div style={{fontFamily:"var(--sans)",fontSize:10,fontWeight:600,color:"var(--text-mute)",letterSpacing:"0.14em",textTransform:"uppercase",borderBottom:"1px solid var(--hairline)",paddingBottom:10,marginBottom:16}}>
-              Makro Haber Akışı
+              Türkçe Makro Haber Akışı
             </div>
-            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:32}}>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:24}}>
               {[
-                {baslik:"Fed &amp; Faiz Haberleri", liste: veri?.haberler?.fed||[]},
-                {baslik:"Enflasyon Haberleri",     liste: veri?.haberler?.enflasyon||[]},
+                {baslik:"Fed &amp; Faiz", liste: veri?.haberler?.fed||[]},
+                {baslik:"Enflasyon",     liste: veri?.haberler?.enflasyon||[]},
+                {baslik:"Ekonomi",       liste: veri?.haberler?.ekonomi||[]},
               ].map((grup,i)=>(
                 <div key={i}>
                   <div className="sheet-label" style={{marginBottom:10}} dangerouslySetInnerHTML={{__html:grup.baslik}}/>
-                  {grup.liste.slice(0,4).map((h,j)=>(
-                    <div key={j} style={{padding:"9px 0",borderBottom:"1px solid var(--hairline-soft)"}}>
-                      <div style={{display:"flex",alignItems:"flex-start",gap:6}}>
-                        {h.dil==="tr"
-                          ? <span style={{fontSize:9,background:"var(--accent)",color:"#000",padding:"1px 4px",borderRadius:2,fontFamily:"var(--sans)",fontWeight:700,flexShrink:0,marginTop:2}}>TR</span>
-                          : <span style={{fontSize:9,background:"var(--neutral)",color:"var(--text)",padding:"1px 4px",borderRadius:2,fontFamily:"var(--sans)",fontWeight:700,flexShrink:0,marginTop:2}}>EN</span>
-                        }
-                        <div>
-                          <div style={{fontFamily:"var(--sans)",fontSize:11,fontWeight:600,color:"var(--text-2)",lineHeight:1.4}}>{h.baslik}</div>
-                          {h.tarih && <div style={{fontFamily:"var(--sans)",fontSize:10,color:"var(--text-mute)",marginTop:3}}>
-                            {(() => { try { return new Date(h.tarih).toLocaleString("tr-TR",{day:"numeric",month:"short",hour:"2-digit",minute:"2-digit"}); } catch(e) { return h.tarih; } })()}
-                          </div>}
-                        </div>
+                  {grup.liste.length === 0
+                    ? <div style={{fontFamily:"var(--sans)",fontSize:10,color:"var(--text-mute)",padding:"8px 0"}}>Haber bulunamadı</div>
+                    : grup.liste.slice(0,4).map((h,j)=>(
+                      <div key={j} style={{padding:"9px 0",borderBottom:"1px solid var(--hairline-soft)"}}>
+                        <div style={{fontFamily:"var(--sans)",fontSize:11,fontWeight:600,color:"var(--text-2)",lineHeight:1.4}}>{h.baslik}</div>
+                        {h.tarih && (
+                          <div style={{fontFamily:"var(--sans)",fontSize:10,color:"var(--text-mute)",marginTop:3}}>
+                            {(()=>{try{return new Date(h.tarih).toLocaleString("tr-TR",{day:"numeric",month:"short",hour:"2-digit",minute:"2-digit"})}catch(e){return h.tarih}})()}
+                          </div>
+                        )}
                       </div>
-                    </div>
-                  ))}
+                    ))
+                  }
                 </div>
               ))}
             </div>
@@ -407,7 +405,7 @@ function MakroSayfasi() {
           <div>
             <div style={{marginBottom:4,fontFamily:"var(--sans)",fontSize:11,fontWeight:500}}>Opsiyon Masası · Makro Ekonomi Modülü</div>
             <div style={{color:"var(--text-dim)",fontFamily:"var(--sans)",fontSize:10}}>
-              Veri Kaynakları: BLS (Bureau of Labor Statistics) · US Treasury Fiscal Data · World Bank · OECD · Google News RSS
+              Veri Kaynakları: BLS API · US Treasury Fiscal Data · World Bank API · Google News RSS (TR)
             </div>
           </div>
           <div className="footer-pagenum">— Makro —</div>
@@ -418,194 +416,230 @@ function MakroSayfasi() {
 }
 
 // ─── Kripto Etki Analizi Tablosu ──────────────────────────
-// Tüm 9 göstergenin BTC/ETH üzerindeki etkisini analiz eder
+// Trend dahil kapsamlı analiz — son 4 veri birlikte yorumlanır
 function KriptoEtkiTablosu({ veri }) {
   if (!veri?.gostergeler) return null;
   const g = veri.gostergeler;
 
-  // Her gösterge için etki skoru hesapla (-2 çok olumsuz, +2 çok olumlu)
+  // Trend fonksiyonu
+  const trendRenk  = t => t==="yukari"?"var(--pos)":t==="asagi"?"var(--neg)":"var(--accent)";
+  const trendSimge = t => t==="yukari"?"▲":t==="asagi"?"▼":"→";
+
   const analizler = [
     {
       gosterge: "Fed Faiz",
-      deger: g.fedFaiz?.guncel,
-      birim: "%",
-      degisim: g.fedFaiz?.degisim,
-      btcEtkiSkoru: g.fedFaiz?.guncel
-        ? (g.fedFaiz.guncel >= 5.25 ? -2 : g.fedFaiz.guncel >= 4.5 ? -1 : g.fedFaiz.guncel >= 3 ? 0 : 1)
-        : null,
-      btcMekanizma: "Yüksek faiz → dolar güçlenir → risk varlıklardan çıkış → BTC satış. Düşük faiz → likidite artar → BTC alım.",
-      oncekiHareket: "Tarihsel: Fed faiz artış dönemlerinde BTC ortalama -%40 çekiliş, indirim dönemlerinde +%80 ralli.",
-      senaryo: g.fedFaiz?.guncel >= 5 ? "Kısıtlayıcı bölge — faiz indirimi katalisti bekleniyor" : "Nötr-destekleyici bölge",
+      deger: g.fedFaiz?.guncel, birim: "%",
+      degisim: g.fedFaiz?.degisim, trend: g.fedFaiz?.trend,
+      gecmis: g.fedFaiz?.gecmis,
+      btcEtkiSkoru: g.fedFaiz ? (
+        g.fedFaiz.trend==="asagi" ? 2 :
+        g.fedFaiz.trend==="yukari" ? -2 :
+        g.fedFaiz.guncel>=5?-1:g.fedFaiz.guncel>=3.5?0:1
+      ) : null,
+      btcMekanizma: "Faiz indirimi döngüsü = likidite artışı = BTC rallisi. Faiz artışı = dolar güçlenir = BTC satış.",
+      tarihselNot:  "2019 faiz indirimi → BTC %200+. 2022 faiz artışı → BTC -%75. 2024 indirim → BTC %100+.",
     },
     {
       gosterge: "TÜFE (CPI)",
-      deger: g.cpi?.guncel,
-      birim: "",
-      degisim: g.cpi?.degisim,
-      btcEtkiSkoru: g.cpi?.degisim != null
-        ? (g.cpi.degisim > 0.3 ? -2 : g.cpi.degisim > 0 ? -1 : g.cpi.degisim < -0.2 ? 2 : 1)
-        : null,
-      btcMekanizma: "Yüksek enflasyon → Fed sıkı → BTC baskı. Düşen enflasyon → faiz indirimi yolu açılır → BTC pozitif.",
-      oncekiHareket: "2022 zirve enflasyon döneminde BTC -%75 düştü. 2023 enflasyon düşüşüyle BTC +%160 rallisi.",
-      senaryo: g.cpi?.degisim > 0 ? "Enflasyon artıyor — dikkatli izle" : "Enflasyon frenleniyor — pozitif sinyal",
+      deger: g.cpi?.guncel, birim: "",
+      degisim: g.cpi?.degisim, trend: g.cpi?.trend,
+      gecmis: g.cpi?.gecmis,
+      btcEtkiSkoru: g.cpi ? (
+        g.cpi.trend==="asagi" ? 2 :
+        g.cpi.trend==="yukari" ? -2 : 0
+      ) : null,
+      btcMekanizma: "Düşen enflasyon → Fed faiz indirir → BTC yükselir. Yükselen enflasyon → Fed sıkı → BTC baskı.",
+      tarihselNot:  "2023 enflasyon düşüşü ile BTC aynı dönemde +%160. CPI zirveyi geçince ralli başladı.",
     },
     {
       gosterge: "Tarım Dışı İstihdam (NFP)",
-      deger: g.nfp?.guncel,
-      birim: "K",
-      degisim: g.nfp?.degisim,
-      btcEtkiSkoru: g.nfp?.guncel
-        ? (g.nfp.guncel > 300 ? -2 : g.nfp.guncel > 200 ? -1 : g.nfp.guncel > 100 ? 0 : 1)
-        : null,
-      btcMekanizma: "Güçlü NFP → Fed sıkı para politikası sürer → BTC baskılanır. Zayıf NFP → gevşeme beklentisi → BTC destekli.",
-      oncekiHareket: "NFP sürprizleri BTC'de genellikle ±%3-5 anlık volatilite yaratır. Açıklama günü riskli.",
-      senaryo: g.nfp?.guncel > 200 ? "Güçlü istihdam — Fed baskı sürer" : "Istihdam soğuyor — Fed gevşeme alanı açılıyor",
+      deger: g.nfp?.guncel, birim: "K",
+      degisim: g.nfp?.degisim, trend: g.nfp?.trend,
+      gecmis: g.nfp?.gecmis,
+      btcEtkiSkoru: g.nfp ? (
+        g.nfp.trend==="asagi"&&g.nfp.guncel<150 ? 2 :
+        g.nfp.trend==="yukari"&&g.nfp.guncel>250 ? -2 :
+        g.nfp.guncel>200?-1:1
+      ) : null,
+      btcMekanizma: "Zayıf NFP trendi → Fed gevşeme baskısı → BTC ralli. Güçlü NFP → Fed sıkı → BTC baskı.",
+      tarihselNot:  "NFP açıklama günlerinde BTC ±%3-5 volatilite. Ardışık zayıf NFP = Fed pivot sinyali.",
     },
     {
       gosterge: "ÜFE (PPI)",
-      deger: g.ppi?.guncel,
-      birim: "",
-      degisim: g.ppi?.degisim,
-      btcEtkiSkoru: g.ppi?.degisim != null
-        ? (g.ppi.degisim > 0.5 ? -2 : g.ppi.degisim > 0 ? -1 : 1)
-        : null,
-      btcMekanizma: "Yükselen ÜFE öncü enflasyon sinyali → TÜFE'yi besler → Fed sıkı kalır → BTC negatif.",
-      oncekiHareket: "ÜFE TÜFE'nin 2-3 ay öncüsüdür. ÜFE zirve yapıp düşmeye başladığında BTC'de toparlanma başlar.",
-      senaryo: g.ppi?.degisim > 0 ? "Üretici fiyatları artıyor — enflasyon riski" : "Maliyet baskısı azalıyor — olumlu",
+      deger: g.ppi?.guncel, birim: "",
+      degisim: g.ppi?.degisim, trend: g.ppi?.trend,
+      gecmis: g.ppi?.gecmis,
+      btcEtkiSkoru: g.ppi ? (
+        g.ppi.trend==="asagi" ? 1 :
+        g.ppi.trend==="yukari" ? -1 : 0
+      ) : null,
+      btcMekanizma: "ÜFE 2-3 ay öncü enflasyon göstergesidir. Düşüş TÜFE'yi takip eder → faiz indirim yolu açılır.",
+      tarihselNot:  "ÜFE zirve → TÜFE zirve (2 ay gecikme) → Fed pivot → BTC ralli — 2022-2023 örüntüsü.",
     },
     {
       gosterge: "GSYİH Büyüme",
-      deger: g.gsyih?.guncel,
-      birim: "%",
-      degisim: g.gsyih?.degisim,
-      btcEtkiSkoru: g.gsyih?.guncel != null
-        ? (g.gsyih.guncel < 0 ? 2 : g.gsyih.guncel < 1 ? 1 : g.gsyih.guncel < 2.5 ? 0 : -1)
-        : null,
-      btcMekanizma: "Güçlü büyüme Fed'i sıkı tutar, ancak risk iştahını artırır — karışık etki. Resesyon = acil Fed gevşemesi = BTC rally.",
-      oncekiHareket: "GSYİH verileri gecikmeli (aylarca sonra revize edilir), BTC üzerinde NFP/CPI kadar anlık etkisi yoktur.",
-      senaryo: g.gsyih?.guncel < 2 ? "Büyüme yavaşlıyor — Fed gevşeme baskısı artar" : "Ekonomi güçlü — mixed sinyal",
+      deger: g.gsyih?.guncel, birim: "%",
+      degisim: g.gsyih?.degisim, trend: g.gsyih?.trend,
+      gecmis: g.gsyih?.gecmis,
+      btcEtkiSkoru: g.gsyih ? (
+        g.gsyih.guncel<0 ? 2 :
+        g.gsyih.guncel<1 ? 1 :
+        g.gsyih.guncel<2.5 ? 0 : -1
+      ) : null,
+      btcMekanizma: "Yavaşlayan büyüme Fed gevşemesini tetikler. Resesyon riski = acil Fed müdahalesi = güçlü BTC rally.",
+      tarihselNot:  "2020 resesyonu → Fed $3T likidite → BTC 10x yükseldi. 2022 yavaşlama sonrası benzer patern.",
     },
     {
       gosterge: "PCE Endeksi",
-      deger: g.pce?.guncel,
-      birim: "%",
-      degisim: g.pce?.degisim,
-      btcEtkiSkoru: g.pce?.degisim != null
-        ? (g.pce.degisim > 0.3 ? -2 : g.pce.degisim > 0 ? -1 : 1)
-        : null,
-      btcMekanizma: "Fed'in birincil enflasyon ölçütü. PCE hedef olan %2'ye yaklaştıkça faiz indirim yolu açılır → güçlü BTC etkisi.",
-      oncekiHareket: "2024 PCE düşüş trendinde BTC %100+ rallisi yaşadı. PCE Fed için TÜFE'den daha belirleyici.",
-      senaryo: g.pce?.degisim <= 0 ? "Fed hedefine yaklaşıyor — faiz indirimi yolunda" : "Hedefin üzerinde — Fed temkinli",
+      deger: g.pce?.guncel, birim: "%",
+      degisim: g.pce?.degisim, trend: g.pce?.trend,
+      gecmis: g.pce?.gecmis,
+      btcEtkiSkoru: g.pce ? (
+        g.pce.trend==="asagi" ? 2 :
+        g.pce.trend==="yukari" ? -2 : 0
+      ) : null,
+      btcMekanizma: "Fed'in en çok önem verdiği veri. PCE → %2 hedefine yaklaştıkça faiz indirim kapısı açılır.",
+      tarihselNot:  "2024 PCE gerilemesi ile Fed indirime geçti, BTC aynı dönemde tüm zamanların zirvesine ulaştı.",
     },
     {
-      gosterge: "İşsizlik Başvuruları",
-      deger: g.iscabasvurusu?.guncel,
-      birim: "%",
-      degisim: g.iscabasvurusu?.degisim,
-      btcEtkiSkoru: g.iscabasvurusu?.guncel != null
-        ? (g.iscabasvurusu.guncel < 210 ? -1 : g.iscabasvurusu.guncel > 250 ? 1 : 0)
-        : null,
-      btcMekanizma: "İşsizlik artışı (oran düşerse başvuru artar) Fed'e gevşeme imkânı verir → BTC pozitif. Çok düşük işsizlik Fed'i sıkı tutar.",
-      oncekiHareket: "Haftalık sürprizler anlık ±%1-2 volatilite. İşsizlik oranı %4.5+ aşarsa Fed acil hamle yapabilir.",
-      senaryo: g.iscabasvurusu?.guncel < 4 ? "Tam istihdam — Fed baskı sürer" : "İşsizlik normalleşiyor — Fed alan açıyor",
+      gosterge: "İşsizlik Oranı",
+      deger: g.iscabasvurusu?.guncel, birim: "%",
+      degisim: g.iscabasvurusu?.degisim, trend: g.iscabasvurusu?.trend,
+      gecmis: g.iscabasvurusu?.gecmis,
+      btcEtkiSkoru: g.iscabasvurusu ? (
+        g.iscabasvurusu.trend==="yukari" ? 2 :
+        g.iscabasvurusu.trend==="asagi" ? -1 : 0
+      ) : null,
+      btcMekanizma: "İşsizlik artış trendi → Fed faiz indirir → BTC yükselir. %4.5 üstü tarihsel tetikleyici.",
+      tarihselNot:  "Sahm Kuralı: 3 aylık işsizlik ortalaması 0.5 puan artarsa resesyon. Fed bunu tetik noktası olarak kullanır.",
     },
     {
       gosterge: "ISM İmalat PMI",
-      deger: g.ismImalat?.guncel,
-      birim: "",
-      degisim: g.ismImalat?.degisim,
-      btcEtkiSkoru: g.ismImalat?.guncel != null
-        ? (g.ismImalat.guncel > 55 ? 1 : g.ismImalat.guncel > 50 ? 0 : g.ismImalat.guncel > 45 ? -1 : -2)
-        : null,
-      btcMekanizma: "PMI > 50: imalat genişliyor → risk iştahı pozitif → BTC destekli. PMI < 50: daralma → risk-off → BTC satış.",
-      oncekiHareket: "PMI 50 eşiği kritik. 45 altına düşüş tarihsel olarak BTC'de ciddi satış dalgası öncesi sinyal olmuştur.",
-      senaryo: g.ismImalat?.guncel > 50 ? "Genişleme — risk-on ortam" : "Daralma — dikkatli ol",
+      deger: g.ismImalat?.guncel, birim: "",
+      degisim: g.ismImalat?.degisim, trend: g.ismImalat?.trend,
+      gecmis: g.ismImalat?.gecmis,
+      btcEtkiSkoru: g.ismImalat ? (
+        g.ismImalat.guncel>52&&g.ismImalat.trend==="yukari" ? 2 :
+        g.ismImalat.guncel>50 ? 1 :
+        g.ismImalat.guncel>45 ? -1 : -2
+      ) : null,
+      btcMekanizma: "PMI > 50: genişleme → risk-on → BTC ralli. PMI < 45: güçlü daralma → risk-off → BTC satış.",
+      tarihselNot:  "PMI 50'yi aşıp trend sürdürdüğünde BTC ortalama +%30-50. PMI 45 altı resesyon erken uyarısı.",
     },
     {
       gosterge: "Perakende Satışlar",
-      deger: g.perakende?.guncel,
-      birim: "",
-      degisim: g.perakende?.degisim,
-      btcEtkiSkoru: g.perakende?.degisim != null
-        ? (g.perakende.degisim > 0.5 ? -1 : g.perakende.degisim < -0.5 ? 1 : 0)
-        : null,
-      btcMekanizma: "Güçlü perakende = güçlü tüketici = enflasyon baskısı devam = Fed sıkı. Zayıf perakende = ekonomi yavaşlıyor = Fed gevşeme.",
-      oncekiHareket: "Perakende satışlar BTC için dolaylı etki. Tüketici güveni üzerinden risk iştahını etkiler.",
-      senaryo: g.perakende?.degisim > 0 ? "Güçlü tüketim — enflasyon baskısı sürer" : "Tüketici zayıflıyor — büyüme endişesi",
+      deger: g.perakende?.guncel, birim: "Mr$",
+      degisim: g.perakende?.degisim, trend: g.perakende?.trend,
+      gecmis: g.perakende?.gecmis,
+      btcEtkiSkoru: g.perakende ? (
+        g.perakende.trend==="asagi" ? 1 :
+        g.perakende.trend==="yukari" ? -1 : 0
+      ) : null,
+      btcMekanizma: "Zayıf perakende = tüketici daralması = ekonomi yavaşlıyor = Fed gevşeme. Güçlü = enflasyon canlı = Fed sıkı.",
+      tarihselNot:  "Perakende satışlar 3 ay üst üste düştüğünde tarihsel olarak Fed eyleme geçmiştir.",
     },
   ];
 
   // Genel skor
   const skorlar = analizler.map(a=>a.btcEtkiSkoru).filter(s=>s!=null);
-  const toplamSkor = skorlar.reduce((a,b)=>a+b, 0);
-  const ortSkor = skorlar.length ? toplamSkor/skorlar.length : 0;
-  const genelRenk = ortSkor > 0.5 ? "var(--pos)" : ortSkor < -0.5 ? "var(--neg)" : "var(--accent)";
-  const genelEtiket = ortSkor > 0.5 ? "Genel BTC Eğilimi: OLUMLU 📗" : ortSkor < -0.5 ? "Genel BTC Eğilimi: OLUMSUZ 📕" : "Genel BTC Eğilimi: NÖTR 📙";
+  const ortSkor = skorlar.length ? skorlar.reduce((a,b)=>a+b,0)/skorlar.length : 0;
+  const genelRenk   = ortSkor>0.5?"var(--pos)":ortSkor<-0.5?"var(--neg)":"var(--accent)";
+  const genelEtiket = ortSkor>0.5?"BTC Genel Eğilimi: OLUMLU 📗":ortSkor<-0.5?"BTC Genel Eğilimi: OLUMSUZ 📕":"BTC Genel Eğilimi: NÖTR 📙";
 
-  const etiketRenk = s => s >= 1 ? "var(--pos)" : s <= -1 ? "var(--neg)" : "var(--accent)";
-  const etiketMetin = s => s >= 2 ? "Çok Olumlu ▲▲" : s === 1 ? "Olumlu ▲" : s === 0 ? "Nötr →" : s === -1 ? "Olumsuz ▼" : "Çok Olumsuz ▼▼";
+  const etiketRenk  = s => s>=1?"var(--pos)":s<=-1?"var(--neg)":"var(--accent)";
+  const etiketMetin = s => s>=2?"Çok Olumlu ▲▲":s===1?"Olumlu ▲":s===0?"Nötr →":s===-1?"Olumsuz ▼":"Çok Olumsuz ▼▼";
 
   return (
     <section>
       <div style={{borderBottom:"1px solid var(--hairline)",paddingBottom:12,marginBottom:20,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
         <div style={{fontFamily:"var(--sans)",fontSize:10,fontWeight:600,color:"var(--text-mute)",letterSpacing:"0.14em",textTransform:"uppercase"}}>
-          Kapsamlı Kripto Etki Analizi
+          Kapsamlı Kripto Etki Analizi · Trend Bazlı Yorum
         </div>
         <div style={{fontFamily:"var(--sans)",fontSize:13,fontWeight:700,color:genelRenk}}>{genelEtiket}</div>
       </div>
 
-      {/* Tablo */}
       <div style={{overflowX:"auto"}}>
         <table style={{width:"100%",borderCollapse:"collapse",fontFamily:"var(--sans)",fontSize:11}}>
           <thead>
             <tr style={{borderBottom:"2px solid var(--hairline)"}}>
-              {["Gösterge","Güncel Değer","Değişim","BTC Etkisi","Mekanizma","Senaryo"].map(h=>(
-                <th key={h} style={{padding:"8px 12px",textAlign:"left",fontWeight:600,fontSize:9,color:"var(--text-mute)",letterSpacing:"0.10em",textTransform:"uppercase",whiteSpace:"nowrap"}}>{h}</th>
+              {["Gösterge","Güncel","Son Değişim","Trend (4 dönem)","Son 4 Dönem","BTC Etkisi","Mekanizma"].map(h=>(
+                <th key={h} style={{padding:"8px 10px",textAlign:"left",fontWeight:600,fontSize:9,color:"var(--text-mute)",letterSpacing:"0.08em",textTransform:"uppercase",whiteSpace:"nowrap"}}>{h}</th>
               ))}
             </tr>
           </thead>
           <tbody>
             {analizler.map((a,i)=>(
               <tr key={i} style={{borderBottom:"1px solid var(--hairline-soft)",background:i%2===0?"transparent":"rgba(255,255,255,0.015)"}}>
-                {/* Gösterge adı */}
-                <td style={{padding:"10px 12px",fontWeight:600,color:"var(--text)",whiteSpace:"nowrap"}}>{a.gosterge}</td>
-                {/* Güncel değer */}
-                <td style={{padding:"10px 12px",fontFamily:"var(--mono)",fontWeight:700,color:"var(--text)",whiteSpace:"nowrap"}}>
-                  {a.deger != null ? `${a.deger.toLocaleString("tr-TR",{maximumFractionDigits:2})}${a.birim}` : "—"}
+                {/* Gösterge */}
+                <td style={{padding:"10px 10px",fontWeight:600,color:"var(--text)",whiteSpace:"nowrap",minWidth:140}}>{a.gosterge}</td>
+                {/* Güncel */}
+                <td style={{padding:"10px 10px",fontFamily:"var(--mono)",fontWeight:700,color:a.btcEtkiSkoru>0?"var(--pos)":a.btcEtkiSkoru<0?"var(--neg)":"var(--text)",whiteSpace:"nowrap"}}>
+                  {a.deger!=null?`${a.deger.toLocaleString("tr-TR",{maximumFractionDigits:2})}${a.birim}`:"—"}
                 </td>
                 {/* Değişim */}
-                <td style={{padding:"10px 12px",whiteSpace:"nowrap"}}>
-                  {a.degisim != null ? (
-                    <span style={{fontFamily:"var(--mono)",fontWeight:700,color:a.degisim>=0?"var(--pos)":"var(--neg)"}}>
+                <td style={{padding:"10px 10px",whiteSpace:"nowrap"}}>
+                  {a.degisim!=null?(
+                    <span style={{fontFamily:"var(--mono)",fontWeight:700,fontSize:11,color:a.degisim>=0?"var(--pos)":"var(--neg)"}}>
                       {a.degisim>=0?"+":""}{a.degisim.toFixed(2)}{a.birim}
                     </span>
-                  ) : <span style={{color:"var(--text-mute)"}}>—</span>}
+                  ):<span style={{color:"var(--text-mute)"}}>—</span>}
                 </td>
-                {/* BTC Etkisi skoru */}
-                <td style={{padding:"10px 12px",whiteSpace:"nowrap"}}>
-                  {a.btcEtkiSkoru != null ? (
+                {/* Trend */}
+                <td style={{padding:"10px 10px",whiteSpace:"nowrap"}}>
+                  {a.trend?(
+                    <span style={{fontWeight:700,fontSize:12,color:trendRenk(a.trend)}}>
+                      {trendSimge(a.trend)} {a.trend==="yukari"?"Yükseliş":a.trend==="asagi"?"Düşüş":"Yatay"}
+                    </span>
+                  ):<span style={{color:"var(--text-mute)"}}>—</span>}
+                </td>
+                {/* Son 4 dönem mini sparkline */}
+                <td style={{padding:"10px 10px"}}>
+                  {a.gecmis?.length>1?(
+                    <div style={{display:"flex",gap:3,alignItems:"flex-end",height:24}}>
+                      {a.gecmis.slice(-4).map((d,bi)=>{
+                        const vals=a.gecmis.slice(-4).map(x=>x.deger);
+                        const mn=Math.min(...vals),mx=Math.max(...vals);
+                        const h=mx>mn?Math.max(4,((d.deger-mn)/(mx-mn))*20):12;
+                        const isLast=bi===a.gecmis.slice(-4).length-1;
+                        return(
+                          <div key={bi} title={`${d.tarih}: ${d.deger}`} style={{
+                            width:10,height:h,borderRadius:"1px 1px 0 0",
+                            background:isLast?"var(--accent)":a.btcEtkiSkoru>=1?"var(--pos)":a.btcEtkiSkoru<=-1?"var(--neg)":"var(--neutral)",
+                            opacity:isLast?1:0.5,flexShrink:0,
+                          }}/>
+                        );
+                      })}
+                    </div>
+                  ):<span style={{color:"var(--text-mute)"}}>—</span>}
+                </td>
+                {/* BTC Etkisi */}
+                <td style={{padding:"10px 10px",whiteSpace:"nowrap"}}>
+                  {a.btcEtkiSkoru!=null?(
                     <span style={{fontWeight:700,color:etiketRenk(a.btcEtkiSkoru),fontSize:10}}>
                       {etiketMetin(a.btcEtkiSkoru)}
                     </span>
-                  ) : <span style={{color:"var(--text-mute)"}}>—</span>}
+                  ):<span style={{color:"var(--text-mute)"}}>—</span>}
                 </td>
                 {/* Mekanizma */}
-                <td style={{padding:"10px 12px",color:"var(--text-2)",lineHeight:1.4,maxWidth:280}}>{a.btcMekanizma}</td>
-                {/* Senaryo */}
-                <td style={{padding:"10px 12px",color:"var(--text-dim)",fontSize:10,maxWidth:180}}>{a.senaryo}</td>
+                <td style={{padding:"10px 10px",color:"var(--text-2)",lineHeight:1.4,fontSize:10,maxWidth:260}}>{a.btcMekanizma}</td>
               </tr>
             ))}
           </tbody>
         </table>
       </div>
 
-      {/* Tarihsel Not */}
-      <div style={{marginTop:20,padding:"14px 16px",background:"var(--surface-2)",border:"1px solid var(--hairline)",borderLeft:`3px solid ${genelRenk}`}}>
-        <div style={{fontFamily:"var(--sans)",fontSize:9,fontWeight:600,color:"var(--text-mute)",letterSpacing:"0.10em",textTransform:"uppercase",marginBottom:8}}>Tarihsel Bağlam &amp; Hafıza Notu</div>
-        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16}}>
-          {analizler.filter(a=>a.btcEtkiSkoru!=null).slice(0,4).map((a,i)=>(
-            <div key={i} style={{fontFamily:"var(--sans)",fontSize:10,color:"var(--text-2)",lineHeight:1.5}}>
-              <span style={{fontWeight:700,color:"var(--text)"}}>{a.gosterge}: </span>{a.oncekiHareket}
+      {/* Tarihsel Hafıza */}
+      <div style={{marginTop:20,padding:"16px 18px",background:"var(--surface-2)",border:"1px solid var(--hairline)",borderLeft:`3px solid ${genelRenk}`}}>
+        <div style={{fontFamily:"var(--sans)",fontSize:9,fontWeight:600,color:"var(--text-mute)",letterSpacing:"0.10em",textTransform:"uppercase",marginBottom:12}}>
+          Tarihsel Hafıza — Geçmiş Verilerle Bağlam
+        </div>
+        <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:12}}>
+          {analizler.filter(a=>a.btcEtkiSkoru!=null).map((a,i)=>(
+            <div key={i} style={{fontFamily:"var(--sans)",fontSize:10,color:"var(--text-2)",lineHeight:1.5,padding:"8px 10px",background:"var(--surface)",border:"1px solid var(--hairline-soft)"}}>
+              <div style={{fontWeight:700,color:etiketRenk(a.btcEtkiSkoru),marginBottom:4,fontSize:9,letterSpacing:"0.05em"}}>
+                {a.gosterge} · {etiketMetin(a.btcEtkiSkoru)}
+              </div>
+              {a.tarihselNot}
             </div>
           ))}
         </div>
