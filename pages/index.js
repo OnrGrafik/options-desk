@@ -275,39 +275,39 @@ function MakroSayfasi() {
   // 9 gösterge tanımı
   const gostergeler = [
     {
-      id:"fedFaiz", baslik:"Fed Faiz Kararı", kaynak:"FRED · FEDFUNDS",
+      id:"fedFaiz", baslik:"Fed Faiz / Hazine Bonosu", kaynak:"US Treasury · T-Bills",
       birim:"%", ters:false,
-      aciklama:"ABD Merkez Bankası (Fed) politika faiz oranı. Yüksek faiz BTC için baskıcı, düşen faiz likidite artışı ile BTC'yi destekler.",
+      aciklama:"Hazine Bonosu ortalama faizi (Fed politika faizi proxy'si). %4.3 civarında. Düşüş trendi = likidite artışı = BTC rallisi. 2024 Fed indirim döngüsünde BTC +%100 yaşandı.",
       veri: g.fedFaiz,
     },
     {
       id:"cpi", baslik:"TÜFE (CPI — Enflasyon)", kaynak:"BLS · CUUR0000SA0",
       birim:"", ters:true,
-      aciklama:"ABD Tüketici Fiyat Endeksi. Yüksek enflasyon Fed'in faiz düşürmesini geciktirir, BTC için olumsuz. Enflasyonun gerilemesi faiz indirimi yolunu açar.",
+      aciklama:"ABD Tüketici Fiyat Endeksi (1982-84=100). Nisan 2026: 333.020, yıllık %3.8 artış. Yüksek enflasyon Fed'in faiz indirmesini geciktirir. Düşüş trendi faiz indirim yolunu açar.",
       veri: g.cpi,
     },
     {
       id:"nfp", baslik:"Tarım Dışı İstihdam (NFP)", kaynak:"BLS · CES0000000001",
       birim:"K", ters:true,
-      aciklama:"ABD'de tarım dışı sektörde aylık eklenen iş değişimi (bin kişi). Nisan 2026: +115K. Güçlü NFP = Fed sıkı = BTC baskısı. Zayıf NFP = Fed gevşeme beklentisi = BTC pozitif.",
+      aciklama:"Aylık iş değişimi (bin kişi). Nisan 2026: +115K (beklenti +55K), Mart: +185K, Şubat: -156K. Güçlü NFP = Fed sıkı = BTC baskısı. Zayıf/düşen NFP = Fed gevşeme yolu açılır.",
       veri: g.nfp,
     },
     {
-      id:"ppi", baslik:"ÜFE (PPI — Üretici Fiyatları)", kaynak:"BLS · WPS000000000",
-      birim:"", ters:true,
-      aciklama:"Üretici Fiyat Endeksi. Öncü enflasyon göstergesi — yükselen ÜFE ileride tüketici enflasyonunu besler.",
+      id:"ppi", baslik:"ÜFE (PPI — Nihai Talep)", kaynak:"BLS · WPSFD49502",
+      birim:"%", ters:true,
+      aciklama:"PPI aylık % değişim. Nisan 2026: +%1.4 (yıllık +%6.0, Ara 2022'den beri en yüksek). Enerji fiyatları (İran savaşı) ana itici güç. Öncü enflasyon ölçütü — CPI'ya 2-3 ay önceden sinyal verir.",
       veri: g.ppi,
     },
     {
-      id:"gsyih", baslik:"GSYİH (Büyüme Verisi)", kaynak:"FRED · GDP Büyüme",
+      id:"gsyih", baslik:"GSYİH (Büyüme Verisi)", kaynak:"World Bank · BEA",
       birim:"%", ters:false,
-      aciklama:"ABD Gayri Safi Yurtiçi Hasıla büyümesi. Yavaşlayan büyüme Fed gevşeme beklentisini güçlendirir, BTC için olumlu olabilir.",
+      aciklama:"ABD reel GSYİH büyüme % (yıllık). 2024: %2.8, 2023: %2.9 (World Bank/BEA). Yavaşlayan büyüme Fed gevşemesini tetikler. Resesyon = acil Fed müdahalesi = güçlü BTC rally.",
       veri: g.gsyih,
     },
     {
-      id:"pce", baslik:"PCE (Kişisel Tüketim Harcamaları)", kaynak:"FRED · PCEPI",
+      id:"pce", baslik:"PCE (Kişisel Tüketim Büyüme %)", kaynak:"World Bank · NE.CON.PRVT.KD.ZG",
       birim:"", ters:true,
-      aciklama:"Fed'in tercih ettiği enflasyon ölçütü. PCE düşüşü Fed'e faiz indirimi konusunda alan açar.",
+      aciklama:"Hanehalkı özel tüketim harcamaları büyüme % (yıllık). 2024: %2.8. Tüketim yavaşlaması Fed'e gevşeme fırsatı verir. 2024 PCE zayıflamasıyla BTC ATH'a ulaştı.",
       veri: g.pce,
     },
     {
@@ -317,15 +317,15 @@ function MakroSayfasi() {
       veri: g.iscabasvurusu,
     },
     {
-      id:"ismImalat", baslik:"ISM İmalat PMI", kaynak:"FRED · NAPM",
+      id:"ismImalat", baslik:"ISM İmalat PMI", kaynak:"ISM + FRED · NAPM",
       birim:"", ters:false,
-      aciklama:"ISM İmalat Satın Alma Müdürleri Endeksi. 50 üstü genişleme, altı daralma. Risk iştahı ile doğru orantılı.",
+      aciklama:"ISM İmalat PMI. Nisan 2026: 52.7 (Ağustos 2022'den bu yana en yüksek). 50 üstü genişleme = risk-on ortam. İran savaşı ve tarife belirsizliğine rağmen imalat güçlü.",
       veri: g.ismImalat,
     },
     {
       id:"perakende", baslik:"Perakende Satışlar", kaynak:"Census · RSAFS",
       birim:" Mr$", ters:true,
-      aciklama:"ABD perakende satışlar (milyar $). Tüketici harcamalarının gücünü ölçer. Güçlü = enflasyon baskısı devam = Fed sıkı. Zayıf = ekonomi yavaşlıyor = Fed gevşeme ihtimali artar.",
+      aciklama:"ABD perakende satışlar (milyar $). Nisan 2026: 757.1 Mr$ (+%0.5 aylık, +%4.9 yıllık). Census Bureau 14 Mayıs 2026. Tüketici gücü enflasyonu besler = Fed sıkı = BTC baskısı.",
       veri: g.perakende,
     },
   ];
