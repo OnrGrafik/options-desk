@@ -1009,40 +1009,404 @@ function TopluGreekler({data}) {
   );
 }
 
-// ─── VOLATİLİTE YÜZEYİ ───────────────────────────────────
+// ═══════════════════════════════════════════════════════════
+// VOLATİLİTE YÜZEYİ — Matematiksel Doğrulama
+//
+// 1. ATM IV Term Structure
+//    • Her vade için ATM IV = log-moneyness ağırlıklı interpolasyon
+//      ln(K/S) bazlı: IV_ATM = IV_alt × (|ln(K_üst/S)| / toplam)
+//                             + IV_üst × (|ln(K_alt/S)| / toplam)
+//    • Kaynak: Gatheral (2006) "The Volatility Surface" Ch.1
+//
+// 2. 25Δ Risk Reversal
+//    • d1 = [ln(S/K) + (r + σ²/2)T] / (σ√T)
+//    • Call delta = N(d1)  (q=r=0 için: e^(-qT)·N(d1) = N(d1))
+//    • Put delta  = N(d1) - 1
+//    • 25Δ call: N(d1) ≈ 0.25 olan strike
+//    • 25Δ put:  |N(d1)-1| ≈ 0.25 → N(d1) ≈ 0.75 olan strike
+//    • RR = IV(25Δ put) - IV(25Δ call)
+//    • Pozitif RR = put bias (piyasa aşağı riske prim ödüyor)
+//    • Kaynak: Hull "Options, Futures..." 11e §20.3
+// ═══════════════════════════════════════════════════════════
+
+// ─── ATM Vade Yapısı — Hover Destekli ─────────────────────
 function VadeYapisi({data}) {
-  const pts=(data.volSurface?.termStructure||[]).filter(p=>p.days>0&&p.iv>5&&p.iv<200).sort((a,b)=>a.days-b.days);
-  if (pts.length<2) return <div style={{color:"var(--text-mute)",fontFamily:"var(--sans)",fontSize:10,fontWeight:700,padding:"20px 0"}}>Vade yapısı hesaplanıyor...</div>;
-  const W=560,H=220,pad={top:18,right:20,bottom:30,left:40};
-  const maxD=Math.max(...pts.map(p=>p.days)),minIV=Math.floor(Math.min(...pts.map(p=>p.iv))/5)*5-5,maxIV=Math.ceil(Math.max(...pts.map(p=>p.iv))/5)*5+5;
-  const xS=g=>pad.left+(g/maxD)*(W-pad.left-pad.right),yS=iv=>pad.top+((maxIV-iv)/(maxIV-minIV))*(H-pad.top-pad.bottom);
-  const yol=pts.map((p,i)=>`${i===0?"M":"L"} ${xS(p.days)} ${yS(p.iv)}`).join(" ");
-  const ivTicks=[]; for(let iv=Math.ceil(minIV/10)*10;iv<=maxIV;iv+=10)ivTicks.push(iv);
+  const [hoveredIdx, setHoveredIdx] = useState(null);
+  const svgRef = useRef(null);
+
+  // Filtrele: geçerli vade noktaları
+  const pts = (data.volSurface?.termStructure||[])
+    .filter(p => p.days > 0 && p.iv > 3 && p.iv < 250)
+    .sort((a,b) => a.days - b.days);
+
+  if (pts.length < 2) return (
+    <div style={{color:"var(--text-mute)",fontFamily:"var(--sans)",fontSize:10,fontWeight:700,padding:"20px 0"}}>
+      Vade yapısı hesaplanıyor... ({pts.length} nokta)
+    </div>
+  );
+
+  const W=620, H=240, pad={top:28,right:28,bottom:36,left:48};
+  const cW=W-pad.left-pad.right, cH=H-pad.top-pad.bottom;
+
+  // IV aralığı — %5 marjin
+  const ivMin = Math.min(...pts.map(p=>p.iv));
+  const ivMax = Math.max(...pts.map(p=>p.iv));
+  const ivRange = ivMax - ivMin || 10;
+  const ivLo = Math.floor((ivMin - ivRange*0.15) / 5) * 5;
+  const ivHi = Math.ceil((ivMax  + ivRange*0.15) / 5) * 5;
+
+  // Logaritmik gün skalası — kısa vadeleri daha iyi gösterir
+  const daysMin = Math.max(pts[0].days, 1);
+  const daysMax = pts[pts.length-1].days;
+  const logMin  = Math.log(daysMin);
+  const logMax  = Math.log(Math.max(daysMax, daysMin+1));
+
+  const xS = d  => pad.left + (Math.log(Math.max(d,1)) - logMin) / (logMax - logMin) * cW;
+  const yS = iv => pad.top  + (ivHi - iv) / (ivHi - ivLo) * cH;
+
+  // Smooth bezier path (Catmull-Rom → Bezier)
+  const bezierPath = (() => {
+    if (pts.length < 2) return "";
+    const xy = pts.map(p => ({x: xS(p.days), y: yS(p.iv)}));
+    let d = `M ${xy[0].x} ${xy[0].y}`;
+    for (let i=0; i<xy.length-1; i++) {
+      const p0 = xy[Math.max(0,i-1)];
+      const p1 = xy[i];
+      const p2 = xy[i+1];
+      const p3 = xy[Math.min(xy.length-1,i+2)];
+      const cp1x = p1.x + (p2.x - p0.x)/6;
+      const cp1y = p1.y + (p2.y - p0.y)/6;
+      const cp2x = p2.x - (p3.x - p1.x)/6;
+      const cp2y = p2.y - (p3.y - p1.y)/6;
+      d += ` C ${cp1x} ${cp1y}, ${cp2x} ${cp2y}, ${p2.x} ${p2.y}`;
+    }
+    return d;
+  })();
+  const fillPath = bezierPath + ` L ${xS(pts[pts.length-1].days)} ${H-pad.bottom} L ${xS(pts[0].days)} ${H-pad.bottom} Z`;
+
+  // IV gridlines
+  const ivTicks = [];
+  for (let iv=ivLo; iv<=ivHi; iv+=5) ivTicks.push(iv);
+
+  // Gün grid etiketleri — standart vadeler
+  const gunEtiketi = [7,14,30,60,90,180,270,365].filter(g => g >= daysMin*0.5 && g <= daysMax*1.2);
+
+  // Term structure eğimi yorumu
+  const egim = pts.length>=2 ? pts[pts.length-1].iv - pts[0].iv : 0;
+  const egimMetni = egim > 2 ? "Contango (Normal)" : egim < -2 ? "Backwardation (Ters)" : "Düz (Sabit)";
+  const egimRenk  = egim > 2 ? "var(--pos)"       : egim < -2 ? "var(--neg)"          : "var(--accent)";
+
+  // Hover: mouse yakınındaki noktayı bul
+  const handleMouseMove = (e) => {
+    const rect = svgRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const mx = (e.clientX - rect.left) * (W / rect.width);
+    let best = 0, bestD = Infinity;
+    pts.forEach((p, i) => {
+      const d = Math.abs(xS(p.days) - mx);
+      if (d < bestD) { bestD = d; best = i; }
+    });
+    if (bestD < 40) setHoveredIdx(best);
+    else setHoveredIdx(null);
+  };
+
+  const hp = hoveredIdx !== null ? pts[hoveredIdx] : null;
+
   return (
-    <svg viewBox={`0 0 ${W} ${H}`} className="term-svg">
-      {ivTicks.map(iv=>{const y=yS(iv);if(y<pad.top-2||y>H-pad.bottom+2)return null;return<g key={iv}><line x1={pad.left} x2={W-pad.right} y1={y} y2={y} stroke="var(--hairline-soft)" strokeWidth="0.6"/><text x={pad.left-5} y={y+3} textAnchor="end" fontFamily="var(--sans)" fontSize="9" fontWeight="700" fill="var(--text-mute)">{iv}%</text></g>;})}
-      {[7,30,90,180,240].filter(g=>g<=maxD).map(g=><g key={g}><line x1={xS(g)} x2={xS(g)} y1={H-pad.bottom} y2={H-pad.bottom+4} stroke="var(--hairline-strong)"/><text x={xS(g)} y={H-pad.bottom+16} textAnchor="middle" fontFamily="var(--sans)" fontSize="9" fontWeight="700" fill="var(--text-mute)">{g}g</text></g>)}
-      <path d={`${yol} L ${xS(pts[pts.length-1].days)} ${H-pad.bottom} L ${pad.left} ${H-pad.bottom} Z`} fill="var(--accent)" opacity="0.06"/>
-      <path d={yol} fill="none" stroke="var(--accent)" strokeWidth="1.5"/>
-      {pts.map((p,i)=><g key={i}><circle cx={xS(p.days)} cy={yS(p.iv)} r="3" fill="var(--bg)" stroke="var(--accent)" strokeWidth="1.4"/><text x={xS(p.days)} y={yS(p.iv)-9} textAnchor="middle" fontFamily="var(--sans)" fontSize="9" fontWeight="700" fill="var(--text-2)">{p.iv.toFixed(0)}</text></g>)}
-      <text x={pad.left} y={12} fontFamily="var(--sans)" fontSize="9" fontWeight="700" fill="var(--text-mute)" letterSpacing="0.12em">ATM IV (%)</text>
-    </svg>
+    <div style={{position:"relative"}}>
+      {/* Tooltip */}
+      {hp && (
+        <div style={{
+          position:"absolute", top:0, right:0, zIndex:100,
+          background:"var(--surface)", border:"1px solid var(--hairline-strong)",
+          borderRadius:4, padding:"10px 14px", pointerEvents:"none",
+          fontFamily:"var(--sans)", minWidth:180,
+          boxShadow:"0 4px 20px rgba(0,0,0,0.5)",
+        }}>
+          <div style={{fontSize:9,fontWeight:600,color:"var(--text-mute)",letterSpacing:"0.10em",textTransform:"uppercase",marginBottom:6}}>ATM Vade Yapısı</div>
+          <div style={{fontSize:16,fontWeight:700,color:"var(--accent)",marginBottom:4}}>{hp.iv.toFixed(1)}% IV</div>
+          <div style={{fontSize:11,color:"var(--text-2)",marginBottom:2}}>Vade: <b>{hp.days} gün</b></div>
+          {hp.T && <div style={{fontSize:10,color:"var(--text-mute)"}}>T = {hp.T.toFixed(4)} yıl</div>}
+          {hp.callCount && <div style={{fontSize:10,color:"var(--text-mute)"}}>Call sayısı: {hp.callCount}</div>}
+          <div style={{marginTop:6,paddingTop:6,borderTop:"1px solid var(--hairline-soft)",fontSize:9,color:"var(--text-mute)"}}>
+            Log-moneyness ağırlıklı interpolasyon
+          </div>
+        </div>
+      )}
+
+      <svg
+        ref={svgRef}
+        viewBox={`0 0 ${W} ${H}`}
+        className="term-svg"
+        onMouseMove={handleMouseMove}
+        onMouseLeave={()=>setHoveredIdx(null)}
+        style={{cursor:"crosshair"}}
+      >
+        <defs>
+          <linearGradient id="ivGrad" x1="0" x2="0" y1="0" y2="1">
+            <stop offset="0%"   stopColor="var(--accent)" stopOpacity="0.18"/>
+            <stop offset="100%" stopColor="var(--accent)" stopOpacity="0.01"/>
+          </linearGradient>
+        </defs>
+
+        {/* Grid yatay */}
+        {ivTicks.map(iv => {
+          const y = yS(iv);
+          if (y < pad.top-2 || y > H-pad.bottom+2) return null;
+          return (
+            <g key={iv}>
+              <line x1={pad.left} x2={W-pad.right} y1={y} y2={y}
+                stroke={iv===Math.round((ivLo+ivHi)/2/5)*5?"var(--hairline)":"var(--hairline-soft)"}
+                strokeWidth={iv%10===0?"0.8":"0.4"}/>
+              <text x={pad.left-5} y={y+3} textAnchor="end"
+                fontFamily="var(--sans)" fontSize="9" fontWeight="700"
+                fill="var(--text-mute)">{iv}%</text>
+            </g>
+          );
+        })}
+
+        {/* Grid dikey — standart vadeler */}
+        {gunEtiketi.map(g => {
+          const x = xS(g);
+          if (x < pad.left || x > W-pad.right) return null;
+          return (
+            <g key={g}>
+              <line x1={x} x2={x} y1={pad.top} y2={H-pad.bottom}
+                stroke="var(--hairline-soft)" strokeWidth="0.4" strokeDasharray="3 4"/>
+              <line x1={x} x2={x} y1={H-pad.bottom} y2={H-pad.bottom+4} stroke="var(--hairline)"/>
+              <text x={x} y={H-pad.bottom+16} textAnchor="middle"
+                fontFamily="var(--sans)" fontSize="9" fontWeight="700"
+                fill="var(--text-mute)">{g}g</text>
+            </g>
+          );
+        })}
+
+        {/* Alan dolgu */}
+        <path d={fillPath} fill="url(#ivGrad)"/>
+        {/* Eğri */}
+        <path d={bezierPath} fill="none" stroke="var(--accent)" strokeWidth="2"/>
+
+        {/* Veri noktaları */}
+        {pts.map((p, i) => {
+          const cx = xS(p.days), cy = yS(p.iv);
+          const isHov = hoveredIdx === i;
+          return (
+            <g key={i}>
+              {isHov && <circle cx={cx} cy={cy} r="10" fill="var(--accent)" opacity="0.12"/>}
+              <circle cx={cx} cy={cy} r={isHov?5:3.5}
+                fill={isHov?"var(--accent)":"var(--bg)"}
+                stroke="var(--accent)" strokeWidth={isHov?2:1.5}/>
+              <text x={cx} y={cy-(isHov?14:11)} textAnchor="middle"
+                fontFamily="var(--sans)" fontSize={isHov?"10":"9"} fontWeight="700"
+                fill={isHov?"var(--accent)":"var(--text-2)"}>{p.iv.toFixed(isHov?1:0)}</text>
+            </g>
+          );
+        })}
+
+        {/* Hover dikey çizgi */}
+        {hp && (
+          <line x1={xS(hp.days)} x2={xS(hp.days)} y1={pad.top} y2={H-pad.bottom}
+            stroke="var(--accent)" strokeWidth="0.8" strokeDasharray="4 3" opacity="0.5"/>
+        )}
+
+        {/* Eksen etiketleri */}
+        <text x={pad.left} y={16} fontFamily="var(--sans)" fontSize="9" fontWeight="700"
+          fill="var(--text-mute)" letterSpacing="0.10em">ATM IV (%)</text>
+        <text x={W-pad.right} y={16} textAnchor="end" fontFamily="var(--sans)" fontSize="9" fontWeight="700"
+          fill={egimRenk}>{egimMetni}</text>
+      </svg>
+    </div>
   );
 }
 
+// ─── 25Δ Risk Reversal — Hover Destekli ───────────────────
+// Matematik:
+//   RR = IV(25Δ put) − IV(25Δ call)
+//   Pozitif → put bias (ayı eğimi) → kırmızı bar
+//   Negatif → call bias (boğa eğimi) → yeşil bar
 function RiskReversal({data}) {
-  const rows=(data.volSurface?.riskReversals||[]).filter(r=>Math.abs(r.rr)>0&&Math.abs(r.rr)<15).sort((a,b)=>a.days-b.days).slice(0,10);
-  if (!rows.length) return <div style={{color:"var(--text-mute)",fontFamily:"var(--sans)",fontSize:10,fontWeight:700,padding:"20px 0"}}>25Δ Risk Reversal hesaplanıyor...</div>;
-  const W=560,H=220,pad={top:22,right:20,bottom:30,left:44};
-  const maxG=Math.max(...rows.map(e=>e.days)),maxRR=Math.max(...rows.map(e=>e.rr))+1.5,minRR=Math.min(0,Math.min(...rows.map(e=>e.rr))-0.5),range=maxRR-minRR;
-  const xS=g=>pad.left+(g/maxG)*(W-pad.left-pad.right),yS=rr=>pad.top+((maxRR-rr)/range)*(H-pad.top-pad.bottom),y0=yS(0);
-  const rrTicks=[]; for(let r=Math.floor(minRR/2)*2;r<=maxRR;r+=2)rrTicks.push(r);
+  const [hoveredIdx, setHoveredIdx] = useState(null);
+  const svgRef = useRef(null);
+
+  const rows = (data.volSurface?.riskReversals||[])
+    .filter(r => Math.abs(r.rr) > 0.05 && Math.abs(r.rr) < 20)
+    .sort((a,b) => a.days - b.days)
+    .slice(0, 12);
+
+  if (!rows.length) return (
+    <div style={{color:"var(--text-mute)",fontFamily:"var(--sans)",fontSize:10,fontWeight:700,padding:"20px 0"}}>
+      25Δ Risk Reversal hesaplanıyor...
+    </div>
+  );
+
+  const W=620, H=240, pad={top:28,right:28,bottom:36,left:52};
+  const cW=W-pad.left-pad.right, cH=H-pad.top-pad.bottom;
+
+  // RR aralığı — simetrik eksene göre
+  const rrMax = Math.max(...rows.map(r=>r.rr), 1) + 1.0;
+  const rrMin = Math.min(...rows.map(r=>r.rr), -1) - 1.0;
+  const rrRange = rrMax - rrMin;
+
+  const xS  = (i) => pad.left + (i + 0.5) * (cW / rows.length);
+  const yS  = (rr) => pad.top + ((rrMax - rr) / rrRange) * cH;
+  const y0  = yS(0);
+  const bW  = Math.max(10, Math.min(40, cW / rows.length * 0.65));
+
+  // Y tick'leri — 1 vol aralıkla
+  const rrTicks = [];
+  for (let r = Math.ceil(rrMin); r <= Math.floor(rrMax); r++) {
+    if (r % 1 === 0) rrTicks.push(r);
+  }
+  // Sadece çift sayılar (çok kalabalık olmasın)
+  const rrTicksFiltered = rrTicks.filter(r => r % 2 === 0 || r === 0);
+
+  // Hover
+  const handleMouseMove = (e) => {
+    const rect = svgRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const mx = (e.clientX - rect.left) * (W / rect.width);
+    let best = null, bestD = Infinity;
+    rows.forEach((r, i) => {
+      const d = Math.abs(xS(i) - mx);
+      if (d < bestD) { bestD = d; best = i; }
+    });
+    if (bestD < bW) setHoveredIdx(best);
+    else setHoveredIdx(null);
+  };
+
+  const hr = hoveredIdx !== null ? rows[hoveredIdx] : null;
+
+  // Genel eğim yorumu (frontmonth RR)
+  const frontRR  = rows[0]?.rr || 0;
+  const egilimMetni = frontRR > 1 ? "Put Bias (Ayı Eğimi)" : frontRR < -1 ? "Call Bias (Boğa Eğimi)" : "Dengeli";
+  const egilimRenk  = frontRR > 1 ? "var(--neg)" : frontRR < -1 ? "var(--pos)" : "var(--accent)";
+
   return (
-    <svg viewBox={`0 0 ${W} ${H}`} className="term-svg">
-      {rrTicks.map(r=>{const y=yS(r);if(y<pad.top-2||y>H-pad.bottom+2)return null;return<g key={r}><line x1={pad.left} x2={W-pad.right} y1={y} y2={y} stroke={r===0?"var(--hairline-strong)":"var(--hairline-soft)"} strokeWidth={r===0?0.8:0.5}/><text x={pad.left-5} y={y+3} textAnchor="end" fontFamily="var(--sans)" fontSize="9" fontWeight="700" fill="var(--text-mute)">{r>=0?"+":""}{r} vol</text></g>;})}
-      {rows.map(e=>{const bW=Math.min(36,(W-pad.left-pad.right)/rows.length*0.7),x=xS(e.days),y=e.rr>=0?yS(e.rr):y0,barH=Math.abs(yS(e.rr)-y0),renk=e.rr>=0?"var(--neg)":"var(--pos)";return<g key={e.days}><rect x={x-bW/2} y={y} width={bW} height={barH||1} fill={renk} opacity="0.55"/><line x1={x-bW/2} x2={x+bW/2} y1={y} y2={y} stroke={renk} strokeWidth="1.5"/><text x={x} y={e.rr>=0?yS(e.rr)-6:yS(e.rr)+14} textAnchor="middle" fontFamily="var(--sans)" fontSize="9" fontWeight="700" fill="var(--text-2)">{e.rr.toFixed(1)}</text><text x={x} y={H-pad.bottom+16} textAnchor="middle" fontFamily="var(--sans)" fontSize="9" fontWeight="700" fill="var(--text-mute)">{e.days}g</text></g>;})}
-      <text x={pad.left} y={12} fontFamily="var(--sans)" fontSize="9" fontWeight="700" fill="var(--text-mute)" letterSpacing="0.10em">25Δ SAT − 25Δ AL (vol noktası)</text>
-    </svg>
+    <div style={{position:"relative"}}>
+      {/* Tooltip */}
+      {hr && (
+        <div style={{
+          position:"absolute", top:0, right:0, zIndex:100,
+          background:"var(--surface)", border:"1px solid var(--hairline-strong)",
+          borderRadius:4, padding:"10px 14px", pointerEvents:"none",
+          fontFamily:"var(--sans)", minWidth:200,
+          boxShadow:"0 4px 20px rgba(0,0,0,0.5)",
+        }}>
+          <div style={{fontSize:9,fontWeight:600,color:"var(--text-mute)",letterSpacing:"0.10em",textTransform:"uppercase",marginBottom:6}}>25Δ Risk Reversal</div>
+          <div style={{fontSize:16,fontWeight:700,color:hr.rr>=0?"var(--neg)":"var(--pos)",marginBottom:6}}>
+            {hr.rr>=0?"+":""}{hr.rr.toFixed(2)} vol
+          </div>
+          <div style={{display:"flex",flexDirection:"column",gap:3,fontSize:10}}>
+            <div style={{display:"flex",justifyContent:"space-between"}}>
+              <span style={{color:"var(--text-mute)"}}>25Δ Put IV</span>
+              <span style={{color:"var(--neg)",fontWeight:700}}>{hr.putIV?.toFixed(1)}%</span>
+            </div>
+            <div style={{display:"flex",justifyContent:"space-between"}}>
+              <span style={{color:"var(--text-mute)"}}>25Δ Call IV</span>
+              <span style={{color:"var(--pos)",fontWeight:700}}>{hr.callIV?.toFixed(1)}%</span>
+            </div>
+            {hr.atmIV && <div style={{display:"flex",justifyContent:"space-between"}}>
+              <span style={{color:"var(--text-mute)"}}>ATM IV</span>
+              <span style={{color:"var(--accent)",fontWeight:700}}>{hr.atmIV?.toFixed(1)}%</span>
+            </div>}
+            <div style={{display:"flex",justifyContent:"space-between"}}>
+              <span style={{color:"var(--text-mute)"}}>Vade</span>
+              <span style={{color:"var(--text)",fontWeight:700}}>{hr.days} gün</span>
+            </div>
+          </div>
+          <div style={{marginTop:8,paddingTop:6,borderTop:"1px solid var(--hairline-soft)",fontSize:9,color:"var(--text-mute)"}}>
+            {hr.rr > 0
+              ? "Put prim → Piyasa aşağı harekete prim ödüyor"
+              : hr.rr < 0
+                ? "Call prim → Piyasa yukarı harekete prim ödüyor"
+                : "Simetrik smile — nötr konumlanma"}
+          </div>
+          <div style={{fontSize:8,color:"var(--text-mute)",marginTop:4}}>RR = IV(25Δ put) − IV(25Δ call)</div>
+        </div>
+      )}
+
+      <svg
+        ref={svgRef}
+        viewBox={`0 0 ${W} ${H}`}
+        className="term-svg"
+        onMouseMove={handleMouseMove}
+        onMouseLeave={()=>setHoveredIdx(null)}
+        style={{cursor:"crosshair"}}
+      >
+        {/* Grid yatay */}
+        {rrTicksFiltered.map(r => {
+          const y = yS(r);
+          if (y < pad.top-2 || y > H-pad.bottom+2) return null;
+          const isZero = r === 0;
+          return (
+            <g key={r}>
+              <line x1={pad.left} x2={W-pad.right} y1={y} y2={y}
+                stroke={isZero?"var(--hairline-strong)":"var(--hairline-soft)"}
+                strokeWidth={isZero?1:"0.5"}/>
+              <text x={pad.left-5} y={y+3} textAnchor="end"
+                fontFamily="var(--sans)" fontSize="9" fontWeight="700"
+                fill={isZero?"var(--text-dim)":"var(--text-mute)"}>
+                {r>=0?"+":""}{r} vol
+              </text>
+            </g>
+          );
+        })}
+
+        {/* Sıfır ekseni kalın çizgi */}
+        <line x1={pad.left} x2={W-pad.right} y1={y0} y2={y0}
+          stroke="var(--hairline-strong)" strokeWidth="1.2"/>
+        <text x={pad.left-5} y={y0+3} textAnchor="end"
+          fontFamily="var(--sans)" fontSize="9" fontWeight="700" fill="var(--text-dim)">0</text>
+
+        {/* Barlar */}
+        {rows.map((e, i) => {
+          const x     = xS(i);
+          const yTop  = e.rr >= 0 ? yS(e.rr) : y0;
+          const barH  = Math.max(Math.abs(yS(e.rr) - y0), 2);
+          // Pozitif RR = put bias = ayı = kırmızı
+          // Negatif RR = call bias = boğa = yeşil
+          const renk  = e.rr >= 0 ? "var(--neg)" : "var(--pos)";
+          const isHov = hoveredIdx === i;
+
+          return (
+            <g key={i}>
+              {/* Bar gölge (hover) */}
+              {isHov && <rect x={x-bW/2-3} y={pad.top} width={bW+6} height={cH}
+                fill="rgba(255,255,255,0.03)" rx="2"/>}
+              {/* Bar */}
+              <rect x={x-bW/2} y={yTop} width={bW} height={barH}
+                fill={renk} opacity={isHov?0.85:0.6} rx="1"/>
+              {/* Bar üst çizgisi */}
+              <line x1={x-bW/2} x2={x+bW/2} y1={yTop} y2={yTop}
+                stroke={renk} strokeWidth={isHov?2:1.5}/>
+              {/* Değer etiketi */}
+              <text x={x} y={e.rr>=0 ? yTop-5 : yTop+barH+12}
+                textAnchor="middle" fontFamily="var(--sans)"
+                fontSize={isHov?"10":"9"} fontWeight="700"
+                fill={isHov?renk:"var(--text-2)"}>
+                {e.rr>=0?"+":""}{e.rr.toFixed(1)}
+              </text>
+              {/* Gün etiketi */}
+              <text x={x} y={H-pad.bottom+16} textAnchor="middle"
+                fontFamily="var(--sans)" fontSize={isHov?"10":"9"} fontWeight="700"
+                fill={isHov?"var(--text)":"var(--text-mute)"}>{e.days}g</text>
+            </g>
+          );
+        })}
+
+        {/* Hover dikey çizgi */}
+        {hoveredIdx !== null && (
+          <line x1={xS(hoveredIdx)} x2={xS(hoveredIdx)} y1={pad.top} y2={H-pad.bottom}
+            stroke="var(--text-mute)" strokeWidth="0.5" strokeDasharray="3 4"/>
+        )}
+
+        {/* Başlık */}
+        <text x={pad.left} y={16} fontFamily="var(--sans)" fontSize="9" fontWeight="700"
+          fill="var(--text-mute)" letterSpacing="0.08em">25Δ SAT − 25Δ AL (vol noktası)</text>
+        <text x={W-pad.right} y={16} textAnchor="end" fontFamily="var(--sans)"
+          fontSize="9" fontWeight="700" fill={egilimRenk}>{egilimMetni}</text>
+      </svg>
+    </div>
   );
 }
 
