@@ -1745,17 +1745,8 @@ function OpsiyonSayfasi({ sym, vade }) {
         </div>
         {/* Kapanan Opsiyonlar */}
         <KapananOpsiyonlar sym={sym}/>
-
-        <footer style={{display:"flex",justifyContent:"space-between",alignItems:"flex-end",
-          padding:"14px 0",borderTop:"1px solid var(--hairline)",marginTop:8}}>
-          <div>
-            <div style={{marginBottom:4,fontFamily:"var(--sans)",fontSize:11,fontWeight:500}}>Opsiyon Masası · {asset.label} ({sym}) · Deribit</div>
-            <div style={{color:"var(--text-dim)",fontFamily:"var(--sans)",fontSize:10,fontWeight:400}}>
-              {new Date().toLocaleDateString("tr-TR",{weekday:"long",day:"numeric",month:"long",year:"numeric"})} · {data.stats.rows} kontrat · {data.stats.expiries} vade
-            </div>
-          </div>
-          <div className="footer-pagenum">— {sym} Gamma —</div>
-        </footer>
+        <div className="footer-pagenum">— {sym} Gamma —</div>
+      </footer>
     </>
   );
 }
