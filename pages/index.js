@@ -223,6 +223,191 @@ function SbStat({label,value,pos}) {
 }
 
 // ═══════════════════════════════════════════════════════════
+// KAPANAN OPSİYONLAR — Vade sonu + Büyük kapanışlar
+// ═══════════════════════════════════════════════════════════
+const KAPANAN_CACHE = { veri: null, ts: 0 };
+
+function KapananOpsiyonlar({ sym }) {
+  const [veri,  setVeri]  = useState(null);
+  const [yukl,  setYukl]  = useState(true);
+  const [sekme, setSekme] = useState("vade");   // "vade" | "buyuk"
+
+  useEffect(() => {
+    const yukle = async () => {
+      // 10 dakika önbellekle
+      if (KAPANAN_CACHE.veri && Date.now() - KAPANAN_CACHE.ts < 10 * 60 * 1000) {
+        setVeri(KAPANAN_CACHE.veri); setYukl(false); return;
+      }
+      setYukl(true);
+      try {
+        const r = await fetch("/api/kapanan-opsiyonlar");
+        if (!r.ok) throw new Error(`${r.status}`);
+        const d = await r.json();
+        KAPANAN_CACHE.veri = d; KAPANAN_CACHE.ts = Date.now();
+        setVeri(d);
+      } catch(e) { console.error("Kapanan opsiyonlar:", e); }
+      setYukl(false);
+    };
+    yukle();
+    const iv = setInterval(yukle, 10 * 60 * 1000);
+    return () => clearInterval(iv);
+  }, []);
+
+  const fmt   = n => n ? Math.round(n).toLocaleString("tr-TR") : "—";
+  const fmtK  = n => n >= 1e9 ? (n/1e9).toFixed(1)+"B$" : n >= 1e6 ? (n/1e6).toFixed(0)+"M$" : fmt(n);
+
+  const d = veri?.[sym.toLowerCase()];
+
+  return (
+    <div className="sheet">
+      <div className="sheet-block" style={{borderTop:"none",paddingTop:0}}>
+        {/* Başlık + Sekme */}
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
+          <div className="sheet-label">Kapanan Opsiyonlar</div>
+          <div style={{display:"flex",gap:4}}>
+            {[["vade","Vade Sonu"],["buyuk","Büyük Kapanışlar"]].map(([k,v])=>(
+              <button key={k} onClick={()=>setSekme(k)} style={{
+                fontFamily:"var(--sans)",fontSize:9,fontWeight:700,letterSpacing:"0.08em",
+                padding:"4px 10px",border:"1px solid",cursor:"pointer",
+                borderColor: sekme===k ? "var(--accent)" : "var(--hairline)",
+                background:  sekme===k ? "var(--accent)" : "transparent",
+                color:       sekme===k ? "var(--bg)" : "var(--text-mute)",
+              }}>{v}</button>
+            ))}
+          </div>
+        </div>
+
+        {yukl && (
+          <div style={{textAlign:"center",padding:"32px 0",color:"var(--text-mute)",fontFamily:"var(--sans)",fontSize:10}}>
+            Yükleniyor...
+          </div>
+        )}
+
+        {/* VADE SONU SEKMESİ */}
+        {!yukl && sekme === "vade" && d && (
+          <>
+            {/* Özet kartlar */}
+            {d.ozet && (
+              <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:8,marginBottom:16}}>
+                {[
+                  {lbl:"Toplam OI",     val:`${fmt(d.ozet.toplamOI)} ${sym}`,         renk:"var(--text)"},
+                  {lbl:"ITM Call OI",   val:`${fmt(d.ozet.itmCallOI)} ${sym}`,         renk:"var(--pos)"},
+                  {lbl:"ITM Put OI",    val:`${fmt(d.ozet.itmPutOI)} ${sym}`,          renk:"var(--neg)"},
+                  {lbl:"P/C Oranı",     val:d.ozet.pcRatio.toFixed(2),                 renk:d.ozet.pcRatio>1?"var(--neg)":"var(--pos)"},
+                ].map(({lbl,val,renk})=>(
+                  <div key={lbl} style={{background:"var(--surface-2)",border:"1px solid var(--hairline)",padding:"10px 12px"}}>
+                    <div style={{fontFamily:"var(--sans)",fontSize:9,fontWeight:600,color:"var(--text-mute)",letterSpacing:"0.08em",textTransform:"uppercase",marginBottom:4}}>{lbl}</div>
+                    <div style={{fontFamily:"var(--mono)",fontSize:13,fontWeight:700,color:renk}}>{val}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Tablo */}
+            {d.vadesiDolanlar?.length > 0 ? (
+              <div style={{overflowX:"auto"}}>
+                <table style={{width:"100%",borderCollapse:"collapse",fontFamily:"var(--sans)",fontSize:10}}>
+                  <thead>
+                    <tr style={{borderBottom:"2px solid var(--hairline)"}}>
+                      {["Kontrat","Strike","Tip","Settlement","Durum","OI","Vade"].map(h=>(
+                        <th key={h} style={{padding:"6px 8px",textAlign:"left",fontWeight:600,fontSize:9,
+                          color:"var(--text-mute)",letterSpacing:"0.08em",textTransform:"uppercase",whiteSpace:"nowrap"}}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {d.vadesiDolanlar.slice(0,20).map((k,i)=>(
+                      <tr key={i} style={{borderBottom:"1px solid var(--hairline-soft)",
+                        background: k.itm ? (k.tip==="call"?"rgba(var(--pos-rgb,34,197,94),0.06)":"rgba(var(--neg-rgb,239,68,68),0.06)") : "transparent"}}>
+                        <td style={{padding:"7px 8px",fontFamily:"var(--mono)",fontSize:9,color:"var(--text-mute)"}}>{k.instrument.slice(-16)}</td>
+                        <td style={{padding:"7px 8px",fontFamily:"var(--mono)",fontWeight:700,color:"var(--text)"}}>${fmt(k.strike)}</td>
+                        <td style={{padding:"7px 8px"}}>
+                          <span style={{fontSize:9,fontWeight:700,padding:"2px 6px",
+                            background: k.tip==="call"?"rgba(34,197,94,0.15)":"rgba(239,68,68,0.15)",
+                            color: k.tip==="call"?"var(--pos)":"var(--neg)"}}>
+                            {k.tip.toUpperCase()}
+                          </span>
+                        </td>
+                        <td style={{padding:"7px 8px",fontFamily:"var(--mono)",fontWeight:700,color:"var(--accent)"}}>${fmt(k.settlementFiyat)}</td>
+                        <td style={{padding:"7px 8px"}}>
+                          <span style={{fontSize:9,fontWeight:700,padding:"2px 6px",
+                            background: k.itm?"rgba(34,197,94,0.15)":"rgba(107,114,128,0.15)",
+                            color: k.itm?"var(--pos)":"var(--text-mute)"}}>
+                            {k.itm?"ITM":"OTM"}
+                          </span>
+                        </td>
+                        <td style={{padding:"7px 8px",fontFamily:"var(--mono)",color:"var(--text-2)"}}>{fmt(k.oi)}</td>
+                        <td style={{padding:"7px 8px",color:"var(--text-mute)",fontSize:9}}>
+                          {new Date(k.vade).toLocaleDateString("tr-TR",{day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"})}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <div style={{padding:"24px 0",textAlign:"center",color:"var(--text-mute)",fontFamily:"var(--sans)",fontSize:10}}>
+                Son 7 günde vadesi dolan {sym} opsiyonu bulunamadı
+              </div>
+            )}
+          </>
+        )}
+
+        {/* BÜYÜK KAPANIŞLAR SEKMESİ */}
+        {!yukl && sekme === "buyuk" && d && (
+          <>
+            {d.buyukKapanislar?.length > 0 ? (
+              <div style={{overflowX:"auto"}}>
+                <table style={{width:"100%",borderCollapse:"collapse",fontFamily:"var(--sans)",fontSize:10}}>
+                  <thead>
+                    <tr style={{borderBottom:"2px solid var(--hairline)"}}>
+                      {["Kontrat","Miktar","Yön","Fiyat","IV","Index Fiyat","Zaman"].map(h=>(
+                        <th key={h} style={{padding:"6px 8px",textAlign:"left",fontWeight:600,fontSize:9,
+                          color:"var(--text-mute)",letterSpacing:"0.08em",textTransform:"uppercase",whiteSpace:"nowrap"}}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {d.buyukKapanislar.map((k,i)=>{
+                      const alinTi = k.yon === "buy";
+                      return (
+                        <tr key={i} style={{borderBottom:"1px solid var(--hairline-soft)"}}>
+                          <td style={{padding:"7px 8px",fontFamily:"var(--mono)",fontSize:9,color:"var(--text-mute)"}}>{k.instrument.slice(-16)}</td>
+                          <td style={{padding:"7px 8px",fontFamily:"var(--mono)",fontWeight:700,color:"var(--text)"}}>
+                            {fmt(k.miktar)} {sym}
+                          </td>
+                          <td style={{padding:"7px 8px"}}>
+                            <span style={{fontSize:9,fontWeight:700,padding:"2px 6px",
+                              background: alinTi?"rgba(34,197,94,0.15)":"rgba(239,68,68,0.15)",
+                              color: alinTi?"var(--pos)":"var(--neg)"}}>
+                              {alinTi?"ALIM":"SATIM"}
+                            </span>
+                          </td>
+                          <td style={{padding:"7px 8px",fontFamily:"var(--mono)",color:"var(--accent)"}}>{k.fiyat.toFixed(4)}</td>
+                          <td style={{padding:"7px 8px",fontFamily:"var(--mono)",color:"var(--text-2)"}}>{k.iv.toFixed(1)}%</td>
+                          <td style={{padding:"7px 8px",fontFamily:"var(--mono)",color:"var(--text)"}}>${fmt(k.indexFiyat)}</td>
+                          <td style={{padding:"7px 8px",color:"var(--text-mute)",fontSize:9}}>
+                            {new Date(k.timestamp).toLocaleTimeString("tr-TR",{hour:"2-digit",minute:"2-digit",second:"2-digit"})}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <div style={{padding:"24px 0",textAlign:"center",color:"var(--text-mute)",fontFamily:"var(--sans)",fontSize:10}}>
+                Son işlemlerde büyük kapanış bulunamadı
+              </div>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════
 // MAKRO SAYFASI — 9 kritik gösterge, son 3 ay, BTC yorumu
 // ═══════════════════════════════════════════════════════════
 const MAKRO_CACHE = {veri:null, yuklenmeZamani:0};
@@ -1558,8 +1743,19 @@ function OpsiyonSayfasi({ sym, vade }) {
             {new Date().toLocaleDateString("tr-TR",{weekday:"long",day:"numeric",month:"long",year:"numeric"})} · {data.stats.rows} kontrat · {data.stats.expiries} vade
           </div>
         </div>
-        <div className="footer-pagenum">— {sym} Gamma —</div>
-      </footer>
+        {/* Kapanan Opsiyonlar */}
+        <KapananOpsiyonlar sym={sym}/>
+
+        <footer style={{display:"flex",justifyContent:"space-between",alignItems:"flex-end",
+          padding:"14px 0",borderTop:"1px solid var(--hairline)",marginTop:8}}>
+          <div>
+            <div style={{marginBottom:4,fontFamily:"var(--sans)",fontSize:11,fontWeight:500}}>Opsiyon Masası · {asset.label} ({sym}) · Deribit</div>
+            <div style={{color:"var(--text-dim)",fontFamily:"var(--sans)",fontSize:10,fontWeight:400}}>
+              {new Date().toLocaleDateString("tr-TR",{weekday:"long",day:"numeric",month:"long",year:"numeric"})} · {data.stats.rows} kontrat · {data.stats.expiries} vade
+            </div>
+          </div>
+          <div className="footer-pagenum">— {sym} Gamma —</div>
+        </footer>
     </>
   );
 }
