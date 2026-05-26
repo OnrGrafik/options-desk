@@ -710,7 +710,7 @@ function KapananOpsiyonlar({ sym }) {
             alignItems:"baseline",marginBottom:12}}>
             <div className="sheet-label">Buy / Sell Volume · per strike</div>
             <span style={{fontFamily:"var(--mono)",fontSize:9,
-              color:"var(--text-mute)",letterSpacing:"0.08em"}}>8 KATEGORİ · 24H</span>
+              color:"var(--text-mute)",letterSpacing:"0.08em"}}>SON 1000 İŞLEM · GERÇEK</span>
           </div>
           {renderVolume()}
         </div>
