@@ -231,107 +231,151 @@ const MAKRO_CACHE   = { veri: null, yuklenmeZamani: 0 };
 function KapananOpsiyonlar({ sym }) {
   const [veri,  setVeri]  = useState(null);
   const [yukl,  setYukl]  = useState(true);
-  const [hGamma,setHGamma] = useState(null);  // GammaHistogram hover
-  const [hFlow, setHFlow]  = useState(null);  // VolumeProfile hover
-
-  const ORDERFLOW_CACHE = useRef({ veri: null, ts: 0 });
+  const [hata,  setHata]  = useState(null);
+  const [hG,    setHG]    = useState(null);   // gamma hover
+  const [hF,    setHF]    = useState(null);   // flow hover
+  const cache = useRef({ veri: null, ts: 0, sym: "" });
 
   useEffect(() => {
+    let cancelled = false;
     const yukle = async () => {
-      const cache = ORDERFLOW_CACHE.current;
-      if (cache.veri && Date.now() - cache.ts < 5*60*1000) {
-        setVeri(cache.veri); setYukl(false); return;
+      const c = cache.current;
+      // 5dk ve aynı sembol ise cache'den sun
+      if (c.veri && c.sym === sym && Date.now() - c.ts < 5*60*1000) {
+        if (!cancelled) { setVeri(c.veri); setYukl(false); }
+        return;
       }
-      setYukl(true);
+      setYukl(true); setHata(null);
       try {
         const r = await fetch(`/api/orderflow?currency=${sym}`);
-        if (!r.ok) throw new Error(`${r.status}`);
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
         const d = await r.json();
-        cache.veri = d; cache.ts = Date.now();
-        setVeri(d);
-      } catch(e) { console.error("Orderflow:", e); }
-      setYukl(false);
+        if (d.error) throw new Error(d.error);
+        c.veri = d; c.ts = Date.now(); c.sym = sym;
+        if (!cancelled) setVeri(d);
+      } catch(e) {
+        console.error("Orderflow:", e);
+        if (!cancelled) setHata(e.message);
+      }
+      if (!cancelled) setYukl(false);
     };
     yukle();
     const iv = setInterval(yukle, 5*60*1000);
-    return () => clearInterval(iv);
+    return () => { cancelled = true; clearInterval(iv); };
   }, [sym]);
 
   const fmt  = n => n != null ? Math.round(n).toLocaleString("tr-TR") : "—";
-  const fmtN = n => {
+  const fmtV = n => {
     if (!n && n !== 0) return "—";
     const a = Math.abs(n);
     if (a >= 1000) return (n/1000).toFixed(1)+"K";
-    return n.toFixed(1);
+    return n.toFixed(2);
   };
 
   if (yukl) return (
-    <div style={{padding:"32px 0",textAlign:"center",color:"var(--text-mute)",
-      fontFamily:"var(--mono)",fontSize:10,letterSpacing:"0.16em"}}>
+    <div style={{padding:"40px 0",textAlign:"center",
+      color:"var(--text-mute)",fontFamily:"var(--mono)",
+      fontSize:10,letterSpacing:"0.16em"}}>
       LOADING ORDER FLOW…
     </div>
   );
-  if (!veri) return (
-    <div style={{padding:"32px 0",textAlign:"center",color:"var(--text-mute)",
-      fontFamily:"var(--mono)",fontSize:10,letterSpacing:"0.16em"}}>
-      VERİ ALINAMIYOR
+  if (hata || !veri) return (
+    <div style={{padding:"40px 0",textAlign:"center",
+      color:"var(--neg)",fontFamily:"var(--mono)",fontSize:10}}>
+      {hata || "Veri alınamadı"}
     </div>
   );
 
-  const { spot, gammaUnits: rawGamma, flowByStrike: rawFlow } = veri;
+  const { spot, gammaUnits = [], flowByStrike = [], instruments = 0 } = veri;
   const lo = spot * 0.55, hi = spot * 1.35;
-  const gammaUnits  = (rawGamma  || []).filter(g => g.strike >= lo && g.strike <= hi);
-  const flowByStrike = (rawFlow  || []).filter(f => f.strike >= lo && f.strike <= hi);
+  const gVis = gammaUnits.filter(g => g.strike >= lo && g.strike <= hi);
+  const fVis = flowByStrike.filter(f => f.strike >= lo && f.strike <= hi);
 
-  // ── SHARED CHART DIMS
+  // ── Paylaşılan SVG boyutları — tasarımla birebir
   const W = 1000, H = 260;
   const pad = { top: 20, right: 28, bottom: 44, left: 56 };
   const cW = W - pad.left - pad.right;
   const cH = H - pad.top - pad.bottom;
-  const xScaleOf = (s) => pad.left + ((s - lo) / (hi - lo)) * cW;
-  const zeroYOf  = (yMax) => pad.top + cH/2;
-  const yScaleOf = (v, yMax) => pad.top + cH/2 - (v/yMax) * (cH/2);
 
+  const xScale = s  => pad.left + ((s - lo) / (hi - lo)) * cW;
+  const yMid   = pad.top + cH / 2;
+  const yS     = (v, yMax) => yMid - (v / yMax) * (cH / 2);
+
+  // X ekseni tikleri
   const xTicks = [];
   for (let p = Math.ceil(lo/8000)*8000; p <= hi; p += 8000) xTicks.push(p);
 
-  // ────────────────────────────────────────────
-  // SOL GRAFİK — Net Gamma Exposure per Strike
-  // ────────────────────────────────────────────
+  const xAxisLabels = (
+    <>
+      {xTicks.map(t => {
+        const x = xScale(t);
+        return (
+          <g key={t}>
+            <line x1={x} x2={x} y1={H-pad.bottom} y2={H-pad.bottom+4}
+                  stroke="var(--hairline-strong)"/>
+            <text x={x} y={H-pad.bottom+18} textAnchor="middle"
+                  fontFamily="var(--mono)" fontSize="10" fill="var(--text-mute)">
+              {(t/1000).toFixed(0)}K
+            </text>
+          </g>
+        );
+      })}
+      <text x={pad.left+cW/2} y={H-pad.bottom+36} textAnchor="middle"
+            fontFamily="var(--mono)" fontSize="9"
+            fill="var(--text-mute)" letterSpacing="0.12em">
+        STRIKE
+      </text>
+    </>
+  );
+
+  // SPOT çizgisi
+  const spotLine = (
+    <g>
+      <line x1={xScale(spot)} x2={xScale(spot)} y1={pad.top} y2={H-pad.bottom}
+            stroke="var(--accent)" strokeWidth="1" strokeDasharray="3 3" opacity="0.6"/>
+      <text x={xScale(spot)} y={pad.top-4} textAnchor="middle"
+            fontFamily="var(--mono)" fontSize="9" fontWeight="600"
+            fill="var(--accent)" letterSpacing="0.08em">
+        SPOT · ${fmt(spot)}
+      </text>
+    </g>
+  );
+
+  // ══════════════════════════════════════════════
+  // SOL GRAFİK — Net GEX per strike
+  // ══════════════════════════════════════════════
   const renderGamma = () => {
-    if (!gammaUnits.length) return (
-      <div style={{height:H,display:"flex",alignItems:"center",justifyContent:"center",
-        color:"var(--text-mute)",fontFamily:"var(--mono)",fontSize:9,letterSpacing:"0.1em"}}>
-        KAPANAN OPSİYON BULUNAMADI
+    if (!gVis.length) return (
+      <div style={{height:H, display:"flex", alignItems:"center",
+        justifyContent:"center", color:"var(--text-mute)",
+        fontFamily:"var(--mono)", fontSize:9, letterSpacing:"0.1em"}}>
+        GEX VERİSİ YOK
       </div>
     );
 
-    const maxAbs = Math.max(...gammaUnits.map(g => Math.abs(g.net)), 1e-6);
+    const maxAbs = Math.max(...gVis.map(g => Math.abs(g.net)), 1e-6);
     const yMax   = maxAbs * 1.1;
-    const zeroY  = zeroYOf(yMax);
-    const yTicks = [-1,-0.5,0,0.5,1].map(t => t*yMax);
-    const barW   = Math.max((cW / gammaUnits.length) * 0.55, 1);
+    const barW   = Math.max((cW / gVis.length) * 0.55, 1);
+    const yTicks = [-1,-0.5,0,0.5,1].map(t => t * yMax);
 
-    // Peak annotations
-    const callPeak = [...gammaUnits].sort((a,b) => b.net - a.net)[0];
-    const putPeak  = [...gammaUnits].sort((a,b) => a.net - b.net)[0];
+    // Peak'ler — annotation için
+    const callPeak = [...gVis].sort((a,b) => b.net - a.net)[0];
+    const putPeak  = [...gVis].sort((a,b) => a.net - b.net)[0];
 
     return (
       <div style={{position:"relative"}}>
-        <svg viewBox={`0 0 ${W} ${H}`} style={{width:"100%",height:"auto",display:"block",cursor:"crosshair"}}
-          onMouseMove={e => {
-            const rect = e.currentTarget.getBoundingClientRect();
-            const mx = (e.clientX - rect.left) / rect.width * W;
-            const strike = lo + ((mx - pad.left) / cW) * (hi - lo);
-            let best = null, bestD = Infinity;
-            for (const g of gammaUnits) {
-              const d = Math.abs(g.strike - strike);
-              if (d < bestD) { bestD = d; best = g; }
-            }
-            setHGamma(best && bestD < (hi-lo)*0.015 ? best : null);
-          }}
-          onMouseLeave={() => setHGamma(null)}
-        >
+        <svg viewBox={`0 0 ${W} ${H}`}
+             style={{width:"100%",height:"auto",display:"block",cursor:"crosshair"}}
+             onMouseMove={e => {
+               const r = e.currentTarget.getBoundingClientRect();
+               const mx = (e.clientX-r.left)/r.width*W;
+               const s  = lo + ((mx-pad.left)/cW)*(hi-lo);
+               let best=null, bd=Infinity;
+               for(const g of gVis){ const d=Math.abs(g.strike-s); if(d<bd){bd=d;best=g;} }
+               setHG(best&&bd<(hi-lo)*0.015?best:null);
+             }}
+             onMouseLeave={()=>setHG(null)}>
+
           {/* Header */}
           <text x={pad.left} y={14} fontFamily="var(--mono)" fontSize="9"
                 fill="var(--text-mute)" letterSpacing="0.16em">
@@ -339,12 +383,12 @@ function KapananOpsiyonlar({ sym }) {
           </text>
           <text x={W-pad.right} y={14} fontFamily="var(--mono)" fontSize="9"
                 textAnchor="end" fill="var(--text-mute)" letterSpacing="0.12em">
-            {gammaUnits.length} STRIKES
+            {gVis.length} STRIKES
           </text>
 
-          {/* Y-grid */}
+          {/* Y grid */}
           {yTicks.map((t,i) => {
-            const y = yScaleOf(t, yMax);
+            const y = yS(t, yMax);
             if (y < pad.top-2 || y > H-pad.bottom+2) return null;
             const isZ = Math.abs(t) < 1e-9;
             return (
@@ -360,106 +404,99 @@ function KapananOpsiyonlar({ sym }) {
             );
           })}
 
-          {/* Bars */}
-          {gammaUnits.map(g => {
-            const x = xScaleOf(g.strike);
-            const isH = hGamma?.strike === g.strike;
-            const h = (Math.abs(g.net) / yMax) * (cH/2);
+          {/* Barlar */}
+          {gVis.map(g => {
+            const x  = xScale(g.strike);
+            const h  = (Math.abs(g.net)/yMax) * (cH/2);
             if (h < 0.4) return null;
             const isPos = g.net > 0;
+            const isH  = hG?.strike === g.strike;
             return (
               <g key={g.strike}>
-                <rect x={x-barW/2} y={isPos?zeroY-h:zeroY} width={barW} height={h}
-                      fill={isPos?"var(--pos)":"var(--neg)"} opacity={isH?1:0.88}/>
+                <rect x={x-barW/2} y={isPos?yMid-h:yMid}
+                      width={barW} height={h}
+                      fill={isPos?"var(--pos)":"var(--neg)"}
+                      opacity={isH?1:0.88}/>
                 {isH && <line x1={x} x2={x} y1={pad.top} y2={H-pad.bottom}
-                      stroke="var(--accent)" strokeWidth="0.6" strokeDasharray="2 3" opacity="0.5"/>}
+                      stroke="var(--accent)" strokeWidth="0.6"
+                      strokeDasharray="2 3" opacity="0.5"/>}
               </g>
             );
           })}
 
           {/* Call Wall annotation */}
-          {callPeak?.net > 0 && (() => {
-            const x = xScaleOf(callPeak.strike);
-            const y = yScaleOf(callPeak.net, yMax);
+          {callPeak?.net > 0.05 && (() => {
+            const x = xScale(callPeak.strike);
+            const y = yS(callPeak.net, yMax);
+            const tooClose = Math.abs(x - xScale(spot)) < 60;
             return (
               <g>
-                <line x1={x} x2={x} y1={y-16} y2={y-4} stroke="var(--pos)" strokeWidth="0.8"/>
-                <text x={x} y={y-20} textAnchor="middle" fontFamily="var(--mono)"
-                      fontSize="9" fontWeight="600" fill="var(--pos)" letterSpacing="0.04em">
+                <line x1={x} x2={x} y1={y-16} y2={y-4}
+                      stroke="var(--pos)" strokeWidth="0.8"/>
+                <text x={tooClose?x+50:x} y={y-20} textAnchor="middle"
+                      fontFamily="var(--mono)" fontSize="9" fontWeight="600"
+                      fill="var(--pos)" letterSpacing="0.04em">
                   CALL WALL · ${fmt(callPeak.strike)}
                 </text>
               </g>
             );
           })()}
+
           {/* Put Wall annotation */}
-          {putPeak?.net < 0 && (() => {
-            const x = xScaleOf(putPeak.strike);
-            const y = yScaleOf(putPeak.net, yMax);
+          {putPeak?.net < -0.05 && (() => {
+            const x = xScale(putPeak.strike);
+            const y = yS(putPeak.net, yMax);
             return (
               <g>
-                <line x1={x} x2={x} y1={y+4} y2={y+16} stroke="var(--neg)" strokeWidth="0.8"/>
-                <text x={x} y={y+26} textAnchor="middle" fontFamily="var(--mono)"
-                      fontSize="9" fontWeight="600" fill="var(--neg)" letterSpacing="0.04em">
+                <line x1={x} x2={x} y1={y+4} y2={y+16}
+                      stroke="var(--neg)" strokeWidth="0.8"/>
+                <text x={x} y={y+26} textAnchor="middle"
+                      fontFamily="var(--mono)" fontSize="9" fontWeight="600"
+                      fill="var(--neg)" letterSpacing="0.04em">
                   PUT WALL · ${fmt(putPeak.strike)}
                 </text>
               </g>
             );
           })()}
 
-          {/* SPOT */}
-          <line x1={xScaleOf(spot)} x2={xScaleOf(spot)} y1={pad.top} y2={H-pad.bottom}
-                stroke="var(--accent)" strokeWidth="1" strokeDasharray="3 3" opacity="0.6"/>
-          <text x={xScaleOf(spot)} y={pad.top-4} textAnchor="middle"
-                fontFamily="var(--mono)" fontSize="9" fontWeight="600"
-                fill="var(--accent)" letterSpacing="0.08em">
-            SPOT · ${fmt(spot)}
-          </text>
+          {spotLine}
+          {xAxisLabels}
 
-          {/* X axis */}
-          {xTicks.map(t => {
-            const x = xScaleOf(t);
-            return (
-              <g key={t}>
-                <line x1={x} x2={x} y1={H-pad.bottom} y2={H-pad.bottom+4} stroke="var(--hairline-strong)"/>
-                <text x={x} y={H-pad.bottom+18} textAnchor="middle"
-                      fontFamily="var(--mono)" fontSize="10" fill="var(--text-mute)">
-                  {(t/1000).toFixed(0)}K
-                </text>
-              </g>
-            );
-          })}
-          <text x={pad.left+cW/2} y={H-pad.bottom+36} textAnchor="middle"
-                fontFamily="var(--mono)" fontSize="9" fill="var(--text-mute)" letterSpacing="0.12em">
-            STRIKE
-          </text>
-          <text transform={`translate(${pad.left-38},${pad.top+cH/2}) rotate(-90)`}
+          {/* Y label */}
+          <text transform={`translate(${pad.left-42},${pad.top+cH/2}) rotate(-90)`}
                 textAnchor="middle" fontFamily="var(--mono)" fontSize="9"
-                fill="var(--text-mute)" letterSpacing="0.12em">
+                fill="var(--text-mute)" letterSpacing="0.1em">
             NET Γ (BTC)
           </text>
         </svg>
 
-        {hGamma && (
+        {/* Tooltip */}
+        {hG && (
           <div style={{position:"absolute",top:12,right:12,pointerEvents:"none",
             background:"var(--surface)",border:"1px solid var(--hairline-strong)",
-            padding:"10px 14px",minWidth:200,fontFamily:"var(--mono)",fontSize:11,color:"var(--text-2)"}}>
-            <div style={{display:"flex",justifyContent:"space-between",marginBottom:8,
-              paddingBottom:6,borderBottom:"1px solid var(--hairline)"}}>
+            padding:"10px 14px",minWidth:200,fontFamily:"var(--mono)",
+            fontSize:11,color:"var(--text-2)"}}>
+            <div style={{display:"flex",justifyContent:"space-between",
+              marginBottom:8,paddingBottom:6,borderBottom:"1px solid var(--hairline)"}}>
               <span style={{fontFamily:"var(--serif)",fontSize:16,color:"var(--text)"}}>
-                ${fmt(hGamma.strike)}
+                ${fmt(hG.strike)}
               </span>
-              <span style={{color:"var(--text-mute)",fontSize:9,letterSpacing:"0.1em"}}>GAMMA · BTC</span>
+              <span style={{color:"var(--text-mute)",fontSize:9,letterSpacing:"0.1em"}}>
+                GEX · {sym}
+              </span>
             </div>
             {[
-              ["Call γ", `+${hGamma.callGamma.toFixed(3)}`, "var(--pos)"],
-              ["Put γ",  hGamma.putGamma.toFixed(3),         "var(--neg)"],
-              ["Net γ",  `${hGamma.net>=0?"+":""}${hGamma.net.toFixed(3)}`,
-                         hGamma.net>=0?"var(--pos)":"var(--neg)"],
-            ].map(([lbl,val,clr])=>(
-              <div key={lbl} style={{display:"flex",justifyContent:"space-between",
+              ["Call γ", `+${hG.callGamma.toFixed(3)}`, "var(--pos)"],
+              ["Put γ",  hG.putGamma.toFixed(3),          "var(--neg)"],
+              ["Net γ",  `${hG.net>=0?"+":""}${hG.net.toFixed(3)}`,
+                          hG.net>=0?"var(--pos)":"var(--neg)"],
+              ["Call OI", fmt(hG.callOI)+" "+sym,         "var(--text-2)"],
+              ["Put OI",  fmt(hG.putOI)+" "+sym,          "var(--text-2)"],
+            ].map(([l,v,c]) => (
+              <div key={l} style={{display:"flex",justifyContent:"space-between",
                 padding:"3px 0",borderBottom:"1px solid var(--hairline-soft)"}}>
-                <span style={{color:"var(--text-mute)"}}>{lbl}</span>
-                <span style={{color:clr,fontWeight:600}}>{val}</span>
+                <span style={{color:"var(--text-mute)"}}>{l}</span>
+                <span style={{color:c,fontWeight:600}}>{v}</span>
               </div>
             ))}
           </div>
@@ -468,60 +505,50 @@ function KapananOpsiyonlar({ sym }) {
     );
   };
 
-  // ────────────────────────────────────────────
-  // SAĞ GRAFİK — 24h Buy↑ / Sell↓ Volume
-  // ────────────────────────────────────────────
+  // ══════════════════════════════════════════════
+  // SAĞ GRAFİK — 24h Buy↑ / Sell↓ per strike
+  // ══════════════════════════════════════════════
   const renderFlow = () => {
-    if (!flowByStrike.length) return (
-      <div style={{height:H,display:"flex",alignItems:"center",justifyContent:"center",
-        color:"var(--text-mute)",fontFamily:"var(--mono)",fontSize:9,letterSpacing:"0.1em"}}>
-        24H HACİM VERİSİ ALINAMIYOR
+    if (!fVis.length) return (
+      <div style={{height:H, display:"flex", alignItems:"center",
+        justifyContent:"center", color:"var(--text-mute)",
+        fontFamily:"var(--mono)", fontSize:9, letterSpacing:"0.1em"}}>
+        24H HACİM VERİSİ YOK
       </div>
     );
 
-    const totals = flowByStrike.map(f => ({
-      ...f,
-      totalBuy:  (f.callBuy||0) + (f.putBuy||0),
-      totalSell: (f.callSell||0) + (f.putSell||0),
-    }));
-
-    const maxAbs = Math.max(
-      ...totals.map(t => Math.max(t.totalBuy, t.totalSell)), 1
-    );
-    const yMax  = maxAbs * 1.1;
-    const zeroY = zeroYOf(yMax);
+    const maxAbs = Math.max(...fVis.map(f => Math.max(f.totalBuy||0, f.totalSell||0)), 1e-6);
+    const yMax   = maxAbs * 1.1;
+    const barW   = Math.max((cW / fVis.length) * 0.55, 1);
     const yTicks = [-1,-0.5,0,0.5,1].map(t => t*yMax);
-    const barW  = Math.max((cW / totals.length) * 0.55, 1);
 
-    // Buy kategorileri (mavi tonları) · Sell kategorileri (turuncu tonları)
+    // Tasarımdaki renkler
     const buyCats  = [
-      { k:"callBuy",  c:"#5b8fc7", label:"Call Buy"  },
-      { k:"putBuy",   c:"#d4a05c", label:"Put Buy"   },
+      {k:"callBuy",  c:"#5b8fc7"},
+      {k:"putBuy",   c:"#d4a05c"},
     ];
     const sellCats = [
-      { k:"callSell", c:"#a8c5e0", label:"Call Sell" },
-      { k:"putSell",  c:"#e8c89c", label:"Put Sell"  },
+      {k:"callSell", c:"#a8c5e0"},
+      {k:"putSell",  c:"#e8c89c"},
     ];
 
-    const topBuy  = [...totals].sort((a,b) => b.totalBuy  - a.totalBuy)[0];
-    const topSell = [...totals].sort((a,b) => b.totalSell - a.totalSell)[0];
+    const topBuy  = [...fVis].sort((a,b) => (b.totalBuy||0)-(a.totalBuy||0))[0];
+    const topSell = [...fVis].sort((a,b) => (b.totalSell||0)-(a.totalSell||0))[0];
 
     return (
       <div style={{position:"relative"}}>
-        <svg viewBox={`0 0 ${W} ${H}`} style={{width:"100%",height:"auto",display:"block",cursor:"crosshair"}}
-          onMouseMove={e => {
-            const rect = e.currentTarget.getBoundingClientRect();
-            const mx = (e.clientX - rect.left) / rect.width * W;
-            const strike = lo + ((mx - pad.left) / cW) * (hi - lo);
-            let best = null, bestD = Infinity;
-            for (const t of totals) {
-              const d = Math.abs(t.strike - strike);
-              if (d < bestD) { bestD = d; best = t; }
-            }
-            setHFlow(best && bestD < (hi-lo)*0.015 ? best : null);
-          }}
-          onMouseLeave={() => setHFlow(null)}
-        >
+        <svg viewBox={`0 0 ${W} ${H}`}
+             style={{width:"100%",height:"auto",display:"block",cursor:"crosshair"}}
+             onMouseMove={e => {
+               const r = e.currentTarget.getBoundingClientRect();
+               const mx = (e.clientX-r.left)/r.width*W;
+               const s  = lo + ((mx-pad.left)/cW)*(hi-lo);
+               let best=null, bd=Infinity;
+               for(const f of fVis){ const d=Math.abs(f.strike-s); if(d<bd){bd=d;best=f;} }
+               setHF(best&&bd<(hi-lo)*0.015?best:null);
+             }}
+             onMouseLeave={()=>setHF(null)}>
+
           {/* Header */}
           <text x={pad.left} y={14} fontFamily="var(--mono)" fontSize="9"
                 fill="var(--text-mute)" letterSpacing="0.16em">
@@ -529,12 +556,12 @@ function KapananOpsiyonlar({ sym }) {
           </text>
           <text x={W-pad.right} y={14} fontFamily="var(--mono)" fontSize="9"
                 textAnchor="end" fill="var(--text-mute)" letterSpacing="0.12em">
-            {totals.length} STRIKES · 24H
+            {fVis.length} STRIKES · 24H
           </text>
 
-          {/* Y-grid */}
+          {/* Y grid */}
           {yTicks.map((t,i) => {
-            const y = yScaleOf(t, yMax);
+            const y = yS(t, yMax);
             if (y < pad.top-2 || y > H-pad.bottom+2) return null;
             const isZ = Math.abs(t) < 1e-9;
             return (
@@ -544,52 +571,53 @@ function KapananOpsiyonlar({ sym }) {
                       strokeWidth={isZ?1:0.6}/>
                 <text x={pad.left-8} y={y+3} textAnchor="end"
                       fontFamily="var(--mono)" fontSize="9" fill="var(--text-mute)">
-                  {t===0?"0":Math.abs(t)>=1000?`${(t/1000).toFixed(1)}K`:Math.round(t)}
+                  {t===0?"0":Math.abs(t)>=1000?`${(t/1000).toFixed(1)}K`:t.toFixed(1)}
                 </text>
               </g>
             );
           })}
 
           {/* Stacked bars */}
-          {totals.map(t => {
-            const x = xScaleOf(t.strike);
-            const isH = hFlow?.strike === t.strike;
+          {fVis.map(f => {
+            const x   = xScale(f.strike);
+            const isH = hF?.strike === f.strike;
 
             let buyOff = 0;
             const buyBars = buyCats.map(cat => {
-              const v = t[cat.k] || 0;
-              if (v < 0.01) return null;
-              const h = (v/yMax) * (cH/2);
-              const y = zeroY - buyOff - h;
+              const v = f[cat.k] || 0;
+              if (v < 0.001) return null;
+              const h = (v/yMax)*(cH/2);
+              const y = yMid - buyOff - h;
               buyOff += h;
               return <rect key={cat.k} x={x-barW/2} y={y} width={barW} height={h}
-                           fill={cat.c} opacity={isH?1:0.92}/>;
+                           fill={cat.c} opacity={isH?1:0.9}/>;
             });
 
             let sellOff = 0;
             const sellBars = sellCats.map(cat => {
-              const v = t[cat.k] || 0;
-              if (v < 0.01) return null;
-              const h = (v/yMax) * (cH/2);
-              const y = zeroY + sellOff;
+              const v = f[cat.k] || 0;
+              if (v < 0.001) return null;
+              const h = (v/yMax)*(cH/2);
+              const y = yMid + sellOff;
               sellOff += h;
               return <rect key={cat.k} x={x-barW/2} y={y} width={barW} height={h}
-                           fill={cat.c} opacity={isH?1:0.92}/>;
+                           fill={cat.c} opacity={isH?1:0.9}/>;
             });
 
             return (
-              <g key={t.strike}>
+              <g key={f.strike}>
                 {buyBars}{sellBars}
                 {isH && <line x1={x} x2={x} y1={pad.top} y2={H-pad.bottom}
-                      stroke="var(--accent)" strokeWidth="0.6" strokeDasharray="2 3" opacity="0.5"/>}
+                      stroke="var(--accent)" strokeWidth="0.6"
+                      strokeDasharray="2 3" opacity="0.5"/>}
               </g>
             );
           })}
 
           {/* BUY PEAK */}
-          {topBuy && (() => {
-            const x = xScaleOf(topBuy.strike);
-            const y = yScaleOf(topBuy.totalBuy, yMax);
+          {topBuy?.totalBuy > 0 && (() => {
+            const x = xScale(topBuy.strike);
+            const y = yS(topBuy.totalBuy, yMax);
             return (
               <g>
                 <line x1={x} x2={x} y1={y-16} y2={y-4} stroke="#5b8fc7" strokeWidth="0.8"/>
@@ -600,10 +628,11 @@ function KapananOpsiyonlar({ sym }) {
               </g>
             );
           })()}
+
           {/* SELL PEAK */}
-          {topSell && (() => {
-            const x = xScaleOf(topSell.strike);
-            const y = yScaleOf(-topSell.totalSell, yMax);
+          {topSell?.totalSell > 0 && (() => {
+            const x = xScale(topSell.strike);
+            const y = yS(-topSell.totalSell, yMax);
             return (
               <g>
                 <line x1={x} x2={x} y1={y+4} y2={y+16} stroke="#d4a05c" strokeWidth="0.8"/>
@@ -615,66 +644,45 @@ function KapananOpsiyonlar({ sym }) {
             );
           })()}
 
-          {/* SPOT */}
-          <line x1={xScaleOf(spot)} x2={xScaleOf(spot)} y1={pad.top} y2={H-pad.bottom}
-                stroke="var(--accent)" strokeWidth="1" strokeDasharray="3 3" opacity="0.6"/>
-          <text x={xScaleOf(spot)} y={pad.top-4} textAnchor="middle"
-                fontFamily="var(--mono)" fontSize="9" fontWeight="600"
-                fill="var(--accent)" letterSpacing="0.08em">
-            SPOT · ${fmt(spot)}
-          </text>
+          {spotLine}
+          {xAxisLabels}
 
-          {/* X axis */}
-          {xTicks.map(t => {
-            const x = xScaleOf(t);
-            return (
-              <g key={t}>
-                <line x1={x} x2={x} y1={H-pad.bottom} y2={H-pad.bottom+4} stroke="var(--hairline-strong)"/>
-                <text x={x} y={H-pad.bottom+18} textAnchor="middle"
-                      fontFamily="var(--mono)" fontSize="10" fill="var(--text-mute)">
-                  {(t/1000).toFixed(0)}K
-                </text>
-              </g>
-            );
-          })}
-          <text x={pad.left+cW/2} y={H-pad.bottom+36} textAnchor="middle"
-                fontFamily="var(--mono)" fontSize="9" fill="var(--text-mute)" letterSpacing="0.12em">
-            STRIKE
-          </text>
-          <text transform={`translate(${pad.left-38},${pad.top+cH/2}) rotate(-90)`}
+          {/* Y label */}
+          <text transform={`translate(${pad.left-42},${pad.top+cH/2}) rotate(-90)`}
                 textAnchor="middle" fontFamily="var(--mono)" fontSize="9"
-                fill="var(--text-mute)" letterSpacing="0.12em">
+                fill="var(--text-mute)" letterSpacing="0.1em">
             VOLUME
           </text>
         </svg>
 
-        {hFlow && (
+        {/* Tooltip */}
+        {hF && (
           <div style={{position:"absolute",top:12,right:12,pointerEvents:"none",
             background:"var(--surface)",border:"1px solid var(--hairline-strong)",
-            padding:"10px 14px",minWidth:220,fontFamily:"var(--mono)",fontSize:11,
-            color:"var(--text-2)",zIndex:5}}>
-            <div style={{display:"flex",justifyContent:"space-between",marginBottom:8,
-              paddingBottom:6,borderBottom:"1px solid var(--hairline)"}}>
+            padding:"10px 14px",minWidth:220,fontFamily:"var(--mono)",
+            fontSize:11,color:"var(--text-2)",zIndex:5}}>
+            <div style={{display:"flex",justifyContent:"space-between",
+              marginBottom:8,paddingBottom:6,borderBottom:"1px solid var(--hairline)"}}>
               <span style={{fontFamily:"var(--serif)",fontSize:16,color:"var(--text)"}}>
-                ${fmt(hFlow.strike)}
+                ${fmt(hF.strike)}
               </span>
               <span style={{color:"var(--text-mute)",fontSize:9,letterSpacing:"0.1em"}}>
                 VOLUME · 24H
               </span>
             </div>
             {[
-              ["Call Buy",  fmtN(hFlow.callBuy||0),  "#5b8fc7"],
-              ["Put Buy",   fmtN(hFlow.putBuy||0),   "#d4a05c"],
-              ["Call Sell", fmtN(hFlow.callSell||0), "#a8c5e0"],
-              ["Put Sell",  fmtN(hFlow.putSell||0),  "#e8c89c"],
-              ["Net Buy",   fmtN((hFlow.callBuy||0)+(hFlow.putBuy||0)-(hFlow.callSell||0)-(hFlow.putSell||0)),
-                            (hFlow.callBuy||0)+(hFlow.putBuy||0) > (hFlow.callSell||0)+(hFlow.putSell||0)
-                              ? "var(--pos)" : "var(--neg)"],
-            ].map(([lbl,val,clr])=>(
-              <div key={lbl} style={{display:"flex",justifyContent:"space-between",
+              ["Call Buy",  fmtV(hF.callBuy||0),  "#5b8fc7"],
+              ["Put Buy",   fmtV(hF.putBuy||0),   "#d4a05c"],
+              ["Call Sell", fmtV(hF.callSell||0), "#a8c5e0"],
+              ["Put Sell",  fmtV(hF.putSell||0),  "#e8c89c"],
+              ["Net",
+                fmtV((hF.totalBuy||0)-(hF.totalSell||0)),
+                (hF.totalBuy||0)>(hF.totalSell||0)?"var(--pos)":"var(--neg)"],
+            ].map(([l,v,c]) => (
+              <div key={l} style={{display:"flex",justifyContent:"space-between",
                 padding:"3px 0",borderBottom:"1px solid var(--hairline-soft)"}}>
-                <span style={{color:"var(--text-mute)"}}>{lbl}</span>
-                <span style={{color:clr,fontWeight:600}}>{val}</span>
+                <span style={{color:"var(--text-mute)"}}>{l}</span>
+                <span style={{color:c,fontWeight:600}}>{v}</span>
               </div>
             ))}
           </div>
@@ -683,31 +691,37 @@ function KapananOpsiyonlar({ sym }) {
     );
   };
 
-  // ── 24h flow totals (altta lejant)
-  const flowTotals = flowByStrike.length ? {
-    callBuy:  flowByStrike.reduce((a,f) => a+(f.callBuy||0),  0),
-    callSell: flowByStrike.reduce((a,f) => a+(f.callSell||0), 0),
-    putBuy:   flowByStrike.reduce((a,f) => a+(f.putBuy||0),   0),
-    putSell:  flowByStrike.reduce((a,f) => a+(f.putSell||0),  0),
+  // 24h flow toplamları
+  const flowTotals = fVis.length ? {
+    callBuy:  fVis.reduce((a,f)=>a+(f.callBuy||0), 0),
+    callSell: fVis.reduce((a,f)=>a+(f.callSell||0),0),
+    putBuy:   fVis.reduce((a,f)=>a+(f.putBuy||0),  0),
+    putSell:  fVis.reduce((a,f)=>a+(f.putSell||0), 0),
   } : null;
 
   return (
     <div>
-      {/* İki grafik yan yana */}
+      {/* İki grafik yan yana — tasarımla birebir */}
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:32,marginBottom:32}}>
+        {/* Sol */}
         <div>
-          <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",marginBottom:12}}>
-            <div className="sheet-label">Kapanan Gamma Exposure · per strike</div>
-            <span style={{fontFamily:"var(--mono)",fontSize:9,color:"var(--text-mute)",letterSpacing:"0.08em"}}>
+          <div style={{display:"flex",justifyContent:"space-between",
+            alignItems:"baseline",marginBottom:12}}>
+            <div className="sheet-label">Gamma Exposure · per strike</div>
+            <span style={{fontFamily:"var(--mono)",fontSize:9,
+              color:"var(--text-mute)",letterSpacing:"0.08em"}}>
               NET Γ · {sym}
             </span>
           </div>
           {renderGamma()}
         </div>
+        {/* Sağ */}
         <div>
-          <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",marginBottom:12}}>
+          <div style={{display:"flex",justifyContent:"space-between",
+            alignItems:"baseline",marginBottom:12}}>
             <div className="sheet-label">Buy / Sell Volume · per strike</div>
-            <span style={{fontFamily:"var(--mono)",fontSize:9,color:"var(--text-mute)",letterSpacing:"0.08em"}}>
+            <span style={{fontFamily:"var(--mono)",fontSize:9,
+              color:"var(--text-mute)",letterSpacing:"0.08em"}}>
               4 KATEGORİ · 24H
             </span>
           </div>
@@ -715,38 +729,45 @@ function KapananOpsiyonlar({ sym }) {
         </div>
       </div>
 
-      {/* Lejant + 24h toplamlar */}
+      {/* Legend + toplamlar */}
       {flowTotals && (
         <>
           <hr style={{margin:"8px 0 24px",border:"none",borderTop:"1px solid var(--hairline)"}}/>
           <div style={{display:"grid",gridTemplateColumns:"minmax(0,1.6fr) minmax(0,1fr)",gap:48}}>
+            {/* Legend */}
             <div style={{display:"flex",gap:20,alignItems:"center",flexWrap:"wrap"}}>
               {[
-                {c:"#5b8fc7",lbl:"Call Buy"},
-                {c:"#d4a05c",lbl:"Put Buy"},
-                {c:"#a8c5e0",lbl:"Call Sell"},
-                {c:"#e8c89c",lbl:"Put Sell"},
-              ].map(({c,lbl})=>(
-                <div key={lbl} style={{display:"flex",alignItems:"center",gap:6,
+                {c:"#5b8fc7",l:"Call Buy"},
+                {c:"#d4a05c",l:"Put Buy"},
+                {c:"#a8c5e0",l:"Call Sell"},
+                {c:"#e8c89c",l:"Put Sell"},
+              ].map(({c,l}) => (
+                <div key={l} style={{display:"flex",alignItems:"center",gap:6,
                   fontFamily:"var(--mono)",fontSize:10,color:"var(--text-dim)"}}>
-                  <div style={{width:10,height:10,background:c,opacity:0.9}}/>
-                  {lbl}
+                  <div style={{width:10,height:10,background:c}}/>
+                  {l}
                 </div>
               ))}
+              <span style={{fontFamily:"var(--mono)",fontSize:9,color:"var(--text-mute)",
+                letterSpacing:"0.04em",marginLeft:8}}>
+                {instruments} aktif opsiyon · {sym}
+              </span>
             </div>
+            {/* 24h toplamlar */}
             <div>
               <div className="sheet-label" style={{marginBottom:14}}>24h Flow · Toplamlar</div>
               {[
-                {lbl:"Calls Buy",  v:flowTotals.callBuy,  c:"#5b8fc7"},
-                {lbl:"Calls Sell", v:flowTotals.callSell, c:"#a8c5e0"},
-                {lbl:"Puts Buy",   v:flowTotals.putBuy,   c:"#d4a05c"},
-                {lbl:"Puts Sell",  v:flowTotals.putSell,  c:"#e8c89c"},
-              ].map(({lbl,v,c})=>(
-                <div key={lbl} style={{display:"grid",gridTemplateColumns:"1fr auto auto",
-                  gap:12,padding:"10px 0",borderBottom:"1px solid var(--hairline-soft)",
+                {l:"Calls Buy",  v:flowTotals.callBuy,  c:"#5b8fc7"},
+                {l:"Calls Sell", v:flowTotals.callSell, c:"#a8c5e0"},
+                {l:"Puts Buy",   v:flowTotals.putBuy,   c:"#d4a05c"},
+                {l:"Puts Sell",  v:flowTotals.putSell,  c:"#e8c89c"},
+              ].map(({l,v,c}) => (
+                <div key={l} style={{display:"grid",
+                  gridTemplateColumns:"1fr auto auto",gap:12,
+                  padding:"10px 0",borderBottom:"1px solid var(--hairline-soft)",
                   fontFamily:"var(--mono)",fontSize:11,alignItems:"baseline"}}>
-                  <span style={{color:"var(--text-dim)"}}>{lbl}</span>
-                  <span style={{color:c,fontWeight:600}}>{fmtN(v)}</span>
+                  <span style={{color:"var(--text-dim)"}}>{l}</span>
+                  <span style={{color:c,fontWeight:600}}>{fmtV(v)}</span>
                   <span style={{color:"var(--text-mute)",fontSize:9}}>{sym}</span>
                 </div>
               ))}
