@@ -229,13 +229,12 @@ const KAPANAN_CACHE = { veri: null, ts: 0 };
 const MAKRO_CACHE   = { veri: null, yuklenmeZamani: 0 };
 
 function KapananOpsiyonlar({ sym }) {
-  const [veri,    setVeri]    = useState(null);
-  const [yukl,    setYukl]    = useState(true);
-  const [sekme,   setSekme]   = useState("grafik");
-  const [vadGrp,  setVadGrp]  = useState("tumu");
-  const [ipucu,   setIpucu]   = useState(null);
-  const [ipXY,    setIpXY]    = useState({x:0,y:0});
-  const svgRef = useRef(null);
+  const [veri,   setVeri]   = useState(null);
+  const [yukl,   setYukl]   = useState(true);
+  const [sekme,  setSekme]  = useState("gamma");    // "gamma" | "tablo" | "buyuk"
+  const [vadGrp, setVadGrp] = useState("tumu");     // "tumu"|"0-7"|"8-45"|"45+"
+  const [hover,  setHover]  = useState(null);
+  const [ipXY,   setIpXY]   = useState({x:0,y:0});
 
   useEffect(() => {
     const yukle = async () => {
@@ -259,16 +258,17 @@ function KapananOpsiyonlar({ sym }) {
 
   const fmt  = n => n != null ? Math.round(n).toLocaleString("tr-TR") : "—";
   const fmtK = n => {
-    if (!n) return "—";
-    if (Math.abs(n) >= 1e9) return (n/1e9).toFixed(2)+"B";
-    if (Math.abs(n) >= 1e6) return (n/1e6).toFixed(1)+"M";
-    if (Math.abs(n) >= 1e3) return (n/1e3).toFixed(0)+"K";
-    return Math.round(n)+"";
+    if (!n && n !== 0) return "—";
+    const a = Math.abs(n);
+    if (a >= 1e9) return (n/1e9).toFixed(2)+"B";
+    if (a >= 1e6) return (n/1e6).toFixed(1)+"M";
+    if (a >= 1e3) return (n/1e3).toFixed(0)+"K";
+    return n.toFixed(1);
   };
 
   const d = veri?.[sym.toLowerCase()];
 
-  // Vade grubu filtresi
+  // Vade filtresi
   const filtrele = (liste = []) => {
     const now = Date.now();
     if (vadGrp === "tumu") return liste;
@@ -281,277 +281,273 @@ function KapananOpsiyonlar({ sym }) {
     });
   };
 
-  // Strike bazlı bars
-  const hesaplaGrafik = () => {
+  // Deribit OI verilerini GammaHistogram'ın beklediği gammaUnits formatına çevir
+  // callGamma = callOI (normalize), putGamma = -putOI (normalize), net = callOI - putOI
+  const hesaplaGammaUnits = () => {
     const liste = filtrele(d?.vadesiDolanlar || []);
-    if (!liste.length) return null;
+    if (!liste.length) return { units: [], settlement: 0 };
+
     const byStrike = {};
     for (const k of liste) {
       if (!byStrike[k.strike]) byStrike[k.strike] = {
         strike: k.strike, callOI: 0, putOI: 0,
-        callUSD: 0, putUSD: 0, itm: {call:0,put:0}, otm: {call:0,put:0},
+        callUSD: 0, putUSD: 0, itm: {call:0, put:0},
         contracts: []
       };
       const b = byStrike[k.strike];
       if (k.tip === "call") {
-        b.callOI  += k.oi;    b.callUSD  += k.oiUsd;
-        if (k.itm) b.itm.call += k.oi; else b.otm.call += k.oi;
+        b.callOI  += k.oi;
+        b.callUSD += k.oiUsd || 0;
+        if (k.itm) b.itm.call += k.oi;
       } else {
-        b.putOI   += k.oi;    b.putUSD   += k.oiUsd;
-        if (k.itm) b.itm.put  += k.oi; else b.otm.put  += k.oi;
+        b.putOI  += k.oi;
+        b.putUSD += k.oiUsd || 0;
+        if (k.itm) b.itm.put += k.oi;
       }
       b.contracts.push(k);
     }
-    const bars   = Object.values(byStrike).sort((a,b) => a.strike - b.strike);
-    const maxOI  = Math.max(...bars.map(b => Math.max(b.callOI, b.putOI)), 1);
-    const settlement = liste.find(k => k.settlementFiyat)?.settlementFiyat || 0;
-    return { bars, maxOI, settlement, liste };
+    const strikes = Object.values(byStrike).sort((a, b) => a.strike - b.strike);
+    const maxOI = Math.max(...strikes.map(s => Math.max(s.callOI, s.putOI)), 1);
+
+    const units = strikes.map(s => ({
+      ...s,
+      callGamma: s.callOI / maxOI,    // normalize 0-1
+      putGamma:  -(s.putOI / maxOI),  // normalize, negatif
+      net:       (s.callOI - s.putOI) / maxOI,
+    }));
+    const settlement = liste.find(k => k.settlementFiyat > 0)?.settlementFiyat || 0;
+    return { units, settlement, maxOI };
   };
 
-  // Mouse handler
-  const handleMove = (e) => {
-    if (!svgRef.current) return;
-    const rect = svgRef.current.getBoundingClientRect();
-    const relX  = (e.clientX - rect.left) / rect.width;
-    const g     = hesaplaGrafik();
-    if (!g) return;
-    const idx = Math.floor(relX * g.bars.length);
-    if (idx >= 0 && idx < g.bars.length) {
-      setIpucu(g.bars[idx]);
-      setIpXY({ x: e.clientX - rect.left, y: e.clientY - rect.top });
-    }
-  };
-
-  // ── GEX grafik render
-  const renderGrafik = () => {
-    const g = hesaplaGrafik();
-    if (!g) return (
-      <div style={{padding:"32px 0",textAlign:"center",color:"var(--text-mute)",fontFamily:"var(--sans)",fontSize:10}}>
+  // ── GammaHistogram render — tasarım dosyasıyla birebir
+  const renderGamma = () => {
+    const { units: vis, settlement, maxOI } = hesaplaGammaUnits();
+    if (!vis.length) return (
+      <div style={{padding:"40px 0",textAlign:"center",color:"var(--text-mute)",
+        fontFamily:"var(--sans)",fontSize:10,letterSpacing:"0.08em"}}>
         Bu filtre için {sym} opsiyonu bulunamadı
       </div>
     );
-    const { bars, maxOI, settlement } = g;
-    const W = 900, H = 400;
-    const pad = { top: 32, right: 18, bottom: 56, left: 16 };
-    const innerW = W - pad.left - pad.right;
-    const innerH = H - pad.top - pad.bottom;
-    const midY   = pad.top + innerH / 2;
-    const barW   = Math.max(2, innerW / bars.length - 2);
-    const scaleH = (innerH / 2) / maxOI;
-    const xOf    = i => pad.left + (i + 0.5) * (innerW / bars.length);
 
-    // Settlement çizgisi (yakın strike bul)
+    const W = 1000, H = 380;
+    const pad = { top: 24, right: 28, bottom: 56, left: 56 };
+    const cW = W - pad.left - pad.right;
+    const cH = H - pad.top - pad.bottom;
+
+    const lo = vis[0].strike * 0.97;
+    const hi = vis[vis.length-1].strike * 1.03;
+
+    const maxAbs = Math.max(...vis.map(g => Math.max(g.callGamma, Math.abs(g.putGamma), Math.abs(g.net))), 1e-6);
+    const yMax = maxAbs * 1.1;
+
+    const xScale = s  => pad.left + ((s - lo) / (hi - lo)) * cW;
+    const yScale = v  => pad.top + cH/2 - (v / yMax) * (cH/2);
+    const zeroY  = yScale(0);
+
+    // X-axis ticks
+    const xTicks = [];
+    const step = (hi - lo) > 80000 ? 8000 : (hi - lo) > 40000 ? 4000 : 2000;
+    for (let p = Math.ceil(lo/step)*step; p <= hi; p += step) xTicks.push(p);
+
+    // Y-axis ticks
+    const yTicks = [-1,-0.75,-0.5,-0.25,0,0.25,0.5,0.75,1].map(t => t * yMax);
+
+    // Bar genişliği — tasarımdaki gibi
+    const barW = Math.max((cW / vis.length) * 0.55, 2);
+
+    // Settlement çizgisi için en yakın strike
     const settIdx = settlement > 0
-      ? bars.reduce((best, b, i) => Math.abs(b.strike - settlement) < Math.abs(bars[best].strike - settlement) ? i : best, 0)
+      ? vis.reduce((best, g, i) =>
+          Math.abs(g.strike - settlement) < Math.abs(vis[best].strike - settlement) ? i : best, 0)
       : -1;
 
-    // Ekspiry renk paleti — tasarım dosyasından
-    const expColors = { "0-7d":"var(--pos)", "8-45d":"var(--accent)", "45d+":"var(--text-dim)" };
-
     return (
-      <div style={{position:"relative"}} onMouseLeave={()=>setIpucu(null)}>
-        {/* Lejant */}
-        <div style={{display:"flex",alignItems:"center",gap:20,marginBottom:10,fontFamily:"var(--sans)",fontSize:9,fontWeight:700,letterSpacing:"0.1em"}}>
-          <span><span style={{color:"var(--pos)",marginRight:4}}>▲</span>CALLS — Open Interest ({sym})</span>
-          <span><span style={{color:"var(--neg)",marginRight:4}}>▼</span>PUTS — Open Interest ({sym})</span>
-          {settlement > 0 && <span style={{color:"var(--accent)"}}>◆ Settlement ${fmt(settlement)}</span>}
-        </div>
-
+      <div style={{position:"relative"}} onMouseLeave={()=>setHover(null)}>
         <svg
-          ref={svgRef}
           viewBox={`0 0 ${W} ${H}`}
           style={{width:"100%",height:"auto",display:"block",cursor:"crosshair"}}
-          onMouseMove={handleMove}
-          onMouseLeave={()=>setIpucu(null)}
+          onMouseMove={e => {
+            const rect = e.currentTarget.getBoundingClientRect();
+            const mx = (e.clientX - rect.left) / rect.width * W;
+            const strike = lo + ((mx - pad.left) / cW) * (hi - lo);
+            let best = null, bestD = Infinity;
+            for (const g of vis) {
+              const dd = Math.abs(g.strike - strike);
+              if (dd < bestD) { bestD = dd; best = g; }
+            }
+            if (best && bestD < (hi-lo)*0.015) {
+              setHover(best);
+              setIpXY({x: e.clientX - rect.left, y: e.clientY - rect.top});
+            } else setHover(null);
+          }}
         >
-          <defs>
-            <linearGradient id="kapCallGrad" x1="0" x2="0" y1="0" y2="1">
-              <stop offset="0%"   stopColor="var(--pos)" stopOpacity="0.92"/>
-              <stop offset="100%" stopColor="var(--pos)" stopOpacity="0.2"/>
-            </linearGradient>
-            <linearGradient id="kapCallGradHL" x1="0" x2="0" y1="0" y2="1">
-              <stop offset="0%"   stopColor="var(--pos)" stopOpacity="1"/>
-              <stop offset="100%" stopColor="var(--pos)" stopOpacity="0.5"/>
-            </linearGradient>
-            <linearGradient id="kapPutGrad" x1="0" x2="0" y1="0" y2="1">
-              <stop offset="0%"   stopColor="var(--neg)" stopOpacity="0.2"/>
-              <stop offset="100%" stopColor="var(--neg)" stopOpacity="0.92"/>
-            </linearGradient>
-            <linearGradient id="kapPutGradHL" x1="0" x2="0" y1="0" y2="1">
-              <stop offset="0%"   stopColor="var(--neg)" stopOpacity="0.5"/>
-              <stop offset="100%" stopColor="var(--neg)" stopOpacity="1"/>
-            </linearGradient>
-            <filter id="kapGlow">
-              <feGaussianBlur stdDeviation="2" result="b"/>
-              <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
-            </filter>
-          </defs>
+          {/* Header */}
+          <text x={pad.left} y={14} fontFamily="var(--mono)" fontSize="9"
+                fill="var(--text-mute)" letterSpacing="0.16em">
+            {`GAMMA · ${sym} PER STRIKE`}
+          </text>
+          <text x={W-pad.right} y={14} fontFamily="var(--mono)" fontSize="9"
+                textAnchor="end" fill="var(--text-mute)" letterSpacing="0.12em">
+            {`${fmt(vis[0]?.strike)} · ${fmt(vis[vis.length-1]?.strike)}`}
+          </text>
 
-          {/* Grid — yatay */}
-          {[0.25, 0.5, 0.75, 1.0].map(p => {
-            const yUp  = midY - p * (innerH/2);
-            const yDn  = midY + p * (innerH/2);
-            const lab  = fmtK(p * maxOI);
+          {/* Y-axis grid + labels */}
+          {yTicks.map((t, i) => {
+            const y = yScale(t);
+            if (y < pad.top - 2 || y > H - pad.bottom + 2) return null;
+            const isZero = Math.abs(t) < 1e-9;
             return (
-              <g key={p}>
-                <line x1={pad.left} x2={W-pad.right} y1={yUp} y2={yUp} stroke="var(--hairline-soft)" strokeWidth="0.4"/>
-                <line x1={pad.left} x2={W-pad.right} y1={yDn} y2={yDn} stroke="var(--hairline-soft)" strokeWidth="0.4"/>
-                <text x={pad.left-2} y={yUp+3} textAnchor="end" fontFamily="var(--mono)" fontSize="7" fill="var(--text-mute)">{lab}</text>
-                <text x={pad.left-2} y={yDn+3} textAnchor="end" fontFamily="var(--mono)" fontSize="7" fill="var(--text-mute)">{lab}</text>
-              </g>
-            );
-          })}
-
-          {/* Merkez çizgisi */}
-          <line x1={pad.left} x2={W-pad.right} y1={midY} y2={midY}
-            stroke="var(--hairline-strong)" strokeWidth="1.2"/>
-
-          {/* Barlar */}
-          {bars.map((b, i) => {
-            const x     = xOf(i) - barW/2;
-            const cH    = b.callOI * scaleH;
-            const pH    = b.putOI  * scaleH;
-            const isSel = ipucu?.strike === b.strike;
-            const isSet = i === settIdx;
-            return (
-              <g key={b.strike}>
-                {/* Seçili satır arkaplanı */}
-                {isSel && (
-                  <rect x={x-1} y={pad.top} width={barW+2} height={innerH}
-                    fill="rgba(255,255,255,0.04)" rx="1"/>
-                )}
-                {/* Settlement dikey çizgi */}
-                {isSet && settlement > 0 && (
-                  <line x1={xOf(i)} x2={xOf(i)} y1={pad.top} y2={H-pad.bottom}
-                    stroke="var(--accent)" strokeWidth="1" strokeDasharray="3 4" opacity="0.6"
-                    filter="url(#kapGlow)"/>
-                )}
-                {/* CALL bar — yukarı */}
-                {b.callOI > 0 && (
-                  <rect x={x} y={midY - cH} width={barW} height={cH}
-                    fill={isSel ? "url(#kapCallGradHL)" : "url(#kapCallGrad)"}
-                    rx="1"/>
-                )}
-                {/* PUT bar — aşağı */}
-                {b.putOI > 0 && (
-                  <rect x={x} y={midY} width={barW} height={pH}
-                    fill={isSel ? "url(#kapPutGradHL)" : "url(#kapPutGrad)"}
-                    rx="1"/>
-                )}
-                {/* En büyük poz Diamond işareti */}
-                {(b.callOI + b.putOI) > maxOI * 0.3 && (
-                  <polygon
-                    points={`${xOf(i)},${midY-3.5} ${xOf(i)+3.5},${midY} ${xOf(i)},${midY+3.5} ${xOf(i)-3.5},${midY}`}
-                    fill="var(--accent)" opacity="0.7"/>
-                )}
-              </g>
-            );
-          })}
-
-          {/* Strike etiketleri */}
-          {bars.map((b, i) => {
-            const x = xOf(i);
-            const n = bars.length;
-            const step = n <= 12 ? 1 : n <= 24 ? 2 : n <= 48 ? 4 : Math.ceil(n/12);
-            if (i % step !== 0) return null;
-            const isSel = ipucu?.strike === b.strike;
-            const label = b.strike >= 1000 ? `${(b.strike/1000).toFixed(0)}K` : `${b.strike}`;
-            return (
-              <g key={`lbl-${b.strike}`}>
-                <line x1={x} x2={x} y1={H-pad.bottom} y2={H-pad.bottom+4} stroke="var(--hairline)" strokeWidth="0.6"/>
-                <text x={x} y={H-pad.bottom+14} textAnchor="middle"
-                  fontFamily="var(--mono)" fontSize="8" fontWeight={isSel?"700":"400"}
-                  fill={isSel?"var(--accent)":"var(--text-mute)"}
-                  transform={n > 20 ? `rotate(-35,${x},${H-pad.bottom+14})` : undefined}>
-                  {label}
+              <g key={i}>
+                <line x1={pad.left} x2={W-pad.right} y1={y} y2={y}
+                      stroke={isZero ? "var(--hairline-strong)" : "var(--hairline-soft)"}
+                      strokeWidth={isZero ? 1 : 0.5}/>
+                <text x={pad.left-8} y={y+3} textAnchor="end"
+                      fontFamily="var(--mono)" fontSize="9" fill="var(--text-mute)">
+                  {(t/yMax).toFixed(2).replace(/\.?0+$/,"") || "0"}
                 </text>
               </g>
             );
           })}
 
-          {/* Hover crosshair */}
-          {ipucu && (() => {
-            const i = bars.findIndex(b => b.strike === ipucu.strike);
-            const x = xOf(i);
+          {/* Settlement dashed line */}
+          {settlement > 0 && settIdx >= 0 && (() => {
+            const x = xScale(vis[settIdx].strike);
             return (
               <g>
                 <line x1={x} x2={x} y1={pad.top} y2={H-pad.bottom}
-                  stroke="var(--text-dim)" strokeWidth="0.6" strokeDasharray="2 3" opacity="0.5"/>
-                <rect x={x-22} y={pad.top-16} width="44" height="14" rx="2"
-                  fill="var(--surface-3)" stroke="var(--hairline-strong)" strokeWidth="0.8"/>
-                <text x={x} y={pad.top-6} textAnchor="middle"
-                  fontFamily="var(--mono)" fontSize="9" fontWeight="700" fill="var(--text)">
-                  ${fmt(ipucu.strike)}
+                      stroke="var(--accent)" strokeWidth="1" strokeDasharray="3 3" opacity="0.5"/>
+                <text x={x} y={pad.top-4} textAnchor="middle"
+                      fontFamily="var(--mono)" fontSize="8" fontWeight="600"
+                      fill="var(--accent)" letterSpacing="0.08em">
+                  STLMT
                 </text>
               </g>
             );
           })()}
 
-          {/* Sol eksen etiketi */}
-          <text transform={`translate(10,${H/2}) rotate(-90)`} textAnchor="middle"
-            fontFamily="var(--sans)" fontSize="8" fontWeight="600" fill="var(--text-mute)" letterSpacing="0.08em">
-            OI ({sym})
+          {/* Bars */}
+          {vis.map((g, i) => {
+            const x = xScale(g.strike);
+            const isHover = hover?.strike === g.strike;
+            const callH = (g.callGamma / yMax) * (cH/2);
+            const putH  = (Math.abs(g.putGamma) / yMax) * (cH/2);
+            const netH  = (Math.abs(g.net) / yMax) * (cH/2);
+            const isSettlement = i === settIdx;
+
+            return (
+              <g key={g.strike}>
+                {/* Call bar — yukarı */}
+                {g.callGamma > 0 && (
+                  <rect x={x-barW/2} y={zeroY-callH} width={barW} height={callH}
+                        fill="var(--pos)" opacity={isHover ? 1 : 0.82}/>
+                )}
+                {/* Put bar — aşağı */}
+                {g.putGamma < 0 && (
+                  <rect x={x-barW/2} y={zeroY} width={barW} height={putH}
+                        fill="var(--neg)" opacity={isHover ? 1 : 0.82}/>
+                )}
+                {/* Net overlay — önemli strikelarda */}
+                {(isSettlement || (maxOI && (g.callOI + g.putOI) > maxOI * 0.25)) && (
+                  <g>
+                    {g.net > 0 && (
+                      <rect x={x-barW/4} y={zeroY-netH} width={Math.max(barW/2,1.5)} height={netH}
+                            fill="var(--text)" opacity="0.55"/>
+                    )}
+                    {g.net < 0 && (
+                      <rect x={x-barW/4} y={zeroY} width={Math.max(barW/2,1.5)} height={netH}
+                            fill="var(--text)" opacity="0.55"/>
+                    )}
+                  </g>
+                )}
+                {/* Hover trace */}
+                {isHover && (
+                  <line x1={x} x2={x} y1={pad.top} y2={H-pad.bottom}
+                        stroke="var(--accent)" strokeWidth="0.6" strokeDasharray="2 3" opacity="0.5"/>
+                )}
+              </g>
+            );
+          })}
+
+          {/* X-axis ticks + labels */}
+          {xTicks.map(t => {
+            const x = xScale(t);
+            return (
+              <g key={t}>
+                <line x1={x} x2={x} y1={H-pad.bottom} y2={H-pad.bottom+4}
+                      stroke="var(--hairline-strong)"/>
+                <text x={x} y={H-pad.bottom+18} textAnchor="middle"
+                      fontFamily="var(--mono)" fontSize="10" fill="var(--text-mute)">
+                  {(t/1000).toFixed(0)}K
+                </text>
+              </g>
+            );
+          })}
+          <text x={pad.left+cW/2} y={H-pad.bottom+36} textAnchor="middle"
+                fontFamily="var(--mono)" fontSize="9" fill="var(--text-mute)" letterSpacing="0.12em">
+            STRIKE
           </text>
+          <text transform={`translate(${pad.left-38},${pad.top+cH/2}) rotate(-90)`}
+                textAnchor="middle" fontFamily="var(--mono)" fontSize="9"
+                fill="var(--text-mute)" letterSpacing="0.12em">
+            GAMMA (OI)
+          </text>
+
+          {/* Legend */}
+          <g transform={`translate(${pad.left+cW/2-130},${H-14})`}>
+            <rect x="0" y="-7" width="10" height="10" fill="var(--pos)"/>
+            <text x="14" y="2" fontFamily="var(--mono)" fontSize="10" fill="var(--text-dim)">Calls</text>
+            <rect x="60" y="-7" width="10" height="10" fill="var(--neg)"/>
+            <text x="74" y="2" fontFamily="var(--mono)" fontSize="10" fill="var(--text-dim)">Puts</text>
+            <rect x="120" y="-7" width="10" height="10" fill="var(--text)" opacity="0.55"/>
+            <text x="134" y="2" fontFamily="var(--mono)" fontSize="10" fill="var(--text-dim)">Net (major)</text>
+          </g>
         </svg>
 
-        {/* Tooltip */}
-        {ipucu && (
+        {/* Hover Tooltip — tasarımdaki gibi */}
+        {hover && (
           <div style={{
-            position:"absolute",
-            top: Math.min(ipXY.y + 8, 220),
-            left: ipXY.x > 500 ? "auto" : ipXY.x + 12,
-            right: ipXY.x > 500 ? "calc(100% - " + (ipXY.x - 12) + "px)" : "auto",
-            background:"var(--surface)",
-            border:"1px solid var(--hairline-strong)",
-            minWidth:200,
-            pointerEvents:"none",
-            zIndex:50,
-            fontFamily:"var(--sans)",
-            overflow:"hidden",
+            position:"absolute", top:12, right:12, pointerEvents:"none",
+            background:"var(--surface)", border:"1px solid var(--hairline-strong)",
+            padding:"10px 14px", minWidth:220,
+            fontFamily:"var(--mono)", fontSize:11, color:"var(--text-2)",
           }}>
-            {/* Başlık */}
-            <div style={{
-              display:"flex",justifyContent:"space-between",alignItems:"center",
-              padding:"8px 12px",background:"var(--surface-2)",
-              borderBottom:"1px solid var(--hairline)",
-            }}>
-              <span style={{fontFamily:"var(--mono)",fontSize:14,fontWeight:700,color:"var(--text)"}}>
-                ${fmt(ipucu.strike)}
+            <div style={{display:"flex",justifyContent:"space-between",
+              marginBottom:8,paddingBottom:6,borderBottom:"1px solid var(--hairline)"}}>
+              <span style={{fontFamily:"var(--serif)",fontSize:16,color:"var(--text)"}}>
+                ${fmt(hover.strike)}
               </span>
-              <span style={{fontSize:9,fontWeight:700,color:"var(--text-mute)",letterSpacing:"0.1em"}}>STRIKE</span>
+              <span style={{color:"var(--text-mute)",fontSize:9,letterSpacing:"0.1em"}}>
+                OI · {sym}
+              </span>
             </div>
-            {/* Satırlar */}
             {[
-              ["Call OI",   fmtK(ipucu.callOI)+" "+sym,  "var(--pos)"],
-              ["Put OI",    fmtK(ipucu.putOI)+" "+sym,   "var(--neg)"],
-              ["Call USD",  "$"+fmtK(ipucu.callUSD),       "var(--pos)"],
-              ["Put USD",   "$"+fmtK(ipucu.putUSD),        "var(--neg)"],
-              ["ITM Call",  fmtK(ipucu.itm.call)+" "+sym, "var(--pos)"],
-              ["ITM Put",   fmtK(ipucu.itm.put)+" "+sym,  "var(--neg)"],
-              ["Kontrat",   (ipucu.contracts?.length||0)+" adet","var(--text-2)"],
-            ].map(([lbl,val,clr])=>(
-              <div key={lbl} style={{
-                display:"flex",justifyContent:"space-between",alignItems:"baseline",
-                padding:"4px 12px",borderBottom:"1px solid var(--hairline-soft)",
-              }}>
-                <span style={{fontSize:9,fontWeight:600,color:"var(--text-dim)"}}>{lbl}</span>
-                <span style={{fontSize:11,fontWeight:700,color:clr}}>{val}</span>
+              ["Call OI",   `+${fmtK(hover.callOI)}`,               "var(--pos)"],
+              ["Put OI",    fmtK(hover.putOI),                       "var(--neg)"],
+              ["Net",       `${(hover.callOI-hover.putOI)>=0?"+":""}${fmtK(hover.callOI-hover.putOI)}`,
+                            (hover.callOI-hover.putOI)>=0?"var(--pos)":"var(--neg)"],
+              ["Call USD",  "$"+fmtK(hover.callUSD),                 "var(--pos)"],
+              ["Put USD",   "$"+fmtK(hover.putUSD),                  "var(--neg)"],
+              ["ITM Call",  fmtK(hover.itm?.call)+" "+sym,           "var(--pos)"],
+              ["ITM Put",   fmtK(hover.itm?.put)+" "+sym,            "var(--neg)"],
+              ["Kontrat",   (hover.contracts?.length||0)+" adet",     "var(--text-dim)"],
+            ].map(([lbl,val,clr]) => (
+              <div key={lbl} style={{display:"flex",justifyContent:"space-between",
+                padding:"3px 0",borderBottom:"1px solid var(--hairline-soft)"}}>
+                <span style={{color:"var(--text-mute)",fontSize:10}}>{lbl}</span>
+                <span style={{color:clr,fontWeight:600}}>{val}</span>
               </div>
             ))}
-            {/* Kontrat listesi */}
-            {ipucu.contracts?.length > 0 && (
-              <div style={{padding:"6px 12px",borderTop:"1px solid var(--hairline)"}}>
-                <div style={{fontSize:8,fontWeight:700,color:"var(--text-mute)",letterSpacing:"0.1em",marginBottom:4}}>POZİSYONLAR</div>
-                {[...ipucu.contracts].sort((a,b) => b.oi - a.oi).slice(0,4).map((c,i) => (
-                  <div key={i} style={{
-                    display:"flex",justifyContent:"space-between",
+            {hover.contracts?.length > 0 && (
+              <div style={{marginTop:6,paddingTop:6,borderTop:"1px solid var(--hairline)"}}>
+                <div style={{fontSize:8,letterSpacing:"0.12em",color:"var(--text-mute)",marginBottom:3}}>
+                  POZİSYONLAR
+                </div>
+                {[...hover.contracts].sort((a,b) => b.oi-a.oi).slice(0,4).map((c,i) => (
+                  <div key={i} style={{display:"flex",justifyContent:"space-between",
                     fontSize:9,lineHeight:"16px",
-                    color: c.tip==="call" ? "var(--pos)" : "var(--neg)",
-                  }}>
+                    color:c.tip==="call"?"var(--pos)":"var(--neg)"}}>
                     <span>{c.tip.toUpperCase()} · {c.itm?"ITM":"OTM"}</span>
-                    <span style={{fontFamily:"var(--mono)",fontWeight:700}}>
-                      {fmtK(c.oi)} {sym}
-                    </span>
+                    <span style={{fontWeight:600}}>{fmtK(c.oi)} {sym}</span>
                   </div>
                 ))}
               </div>
@@ -566,59 +562,76 @@ function KapananOpsiyonlar({ sym }) {
     <div className="sheet">
       <div className="sheet-block" style={{borderTop:"none",paddingTop:0}}>
 
-        {/* Başlık */}
+        {/* Başlık + sekme */}
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
-          <div className="sheet-label">Kapanan Opsiyonlar</div>
+          <div style={{display:"flex",alignItems:"baseline",gap:12}}>
+            <div className="sheet-label" style={{marginBottom:0}}>Kapanan Opsiyonlar</div>
+            <span style={{fontFamily:"var(--mono)",fontSize:9,color:"var(--text-mute)",letterSpacing:"0.06em"}}>
+              Calls push gamma <span style={{color:"var(--pos)"}}>up</span>,{" "}
+              puts push <span style={{color:"var(--neg)"}}>down</span>.
+              Net (white) marks concentration.
+            </span>
+          </div>
           <div style={{display:"flex",gap:4}}>
-            {[["grafik","Grafik"],["tablo","Tablo"],["buyuk","Büyük İşlemler"]].map(([k,v])=>(
+            {[["gamma","Gamma"],["tablo","Tablo"],["buyuk","Büyük İşlem"]].map(([k,v])=>(
               <button key={k} onClick={()=>setSekme(k)} style={{
-                fontFamily:"var(--sans)",fontSize:9,fontWeight:700,letterSpacing:"0.08em",
+                fontFamily:"var(--mono)",fontSize:9,fontWeight:600,letterSpacing:"0.06em",
                 padding:"4px 10px",border:"1px solid",cursor:"pointer",
-                borderColor: sekme===k ? "var(--accent)" : "var(--hairline)",
-                background:  sekme===k ? "var(--accent)" : "transparent",
-                color:       sekme===k ? "var(--bg)"     : "var(--text-mute)",
+                borderColor: sekme===k?"var(--accent)":"var(--hairline)",
+                background:  sekme===k?"var(--accent)":"transparent",
+                color:       sekme===k?"var(--bg)":"var(--text-mute)",
               }}>{v}</button>
             ))}
           </div>
         </div>
 
         {/* Vade filtresi */}
-        <div style={{display:"flex",alignItems:"center",gap:4,marginBottom:14}}>
-          <span style={{fontFamily:"var(--sans)",fontSize:9,fontWeight:600,
-            color:"var(--text-mute)",letterSpacing:"0.08em",textTransform:"uppercase",marginRight:6}}>VADE:</span>
-          {[["tumu","Tümü"],["0-7","0–7g"],["8-45","8–45g"],["45+","45g+"]].map(([k,v])=>(
-            <button key={k} onClick={()=>setVadGrp(k)} style={{
-              fontFamily:"var(--sans)",fontSize:9,fontWeight:700,letterSpacing:"0.07em",
-              padding:"3px 9px",border:"1px solid",cursor:"pointer",
-              borderColor: vadGrp===k ? "var(--text-2)" : "var(--hairline)",
-              background:  vadGrp===k ? "var(--surface-3)" : "transparent",
-              color:       vadGrp===k ? "var(--text)"      : "var(--text-mute)",
-            }}>{v}</button>
-          ))}
+        <div style={{display:"flex",alignItems:"center",gap:4,marginBottom:16}}>
+          <span style={{fontFamily:"var(--mono)",fontSize:9,color:"var(--text-mute)",
+            letterSpacing:"0.1em",textTransform:"uppercase",marginRight:8}}>
+            Expiry
+          </span>
+          <div style={{display:"flex",gap:3}}>
+            {[["tumu","All"],["0-7","0–7g"],["8-45","8–45g"],["45+","45g+"]].map(([k,v])=>(
+              <button key={k} onClick={()=>setVadGrp(k)} className={`sb-chip ${vadGrp===k?"active":""}`}>
+                {v}
+              </button>
+            ))}
+          </div>
         </div>
 
         {yukl && (
-          <div style={{textAlign:"center",padding:"40px 0",color:"var(--text-mute)",
-            fontFamily:"var(--sans)",fontSize:10}}>Yükleniyor...</div>
+          <div style={{padding:"40px 0",textAlign:"center",color:"var(--text-mute)",
+            fontFamily:"var(--mono)",fontSize:10,letterSpacing:"0.12em"}}>
+            LOADING…
+          </div>
         )}
 
-        {/* GRAFİK */}
-        {!yukl && sekme === "grafik" && (
+        {/* GAMMA — ana grafik */}
+        {!yukl && sekme === "gamma" && (
           <>
-            {renderGrafik()}
+            {renderGamma()}
+            {/* Özet istatistikler — tasarımdaki sheet-block stiliyle */}
             {d?.ozet && (
-              <div style={{display:"grid",gridTemplateColumns:"repeat(5,1fr)",gap:6,marginTop:12}}>
+              <div style={{display:"grid",gridTemplateColumns:"repeat(5,1fr)",
+                gap:0,marginTop:20,borderTop:"1px solid var(--hairline)"}}>
                 {[
-                  {lbl:"Toplam OI",  val:`${fmtK(d.ozet.toplamOI)} ${sym}`,  clr:"var(--text)"},
-                  {lbl:"Call OI",    val:`${fmtK(d.ozet.callOI)} ${sym}`,     clr:"var(--pos)"},
-                  {lbl:"Put OI",     val:`${fmtK(d.ozet.putOI)} ${sym}`,      clr:"var(--neg)"},
-                  {lbl:"P/C Oranı",  val:d.ozet.pcRatio.toFixed(2),           clr:d.ozet.pcRatio>1?"var(--neg)":"var(--pos)"},
-                  {lbl:"Max Pain",   val:d.ozet.maxPainStrike ? "$"+fmt(d.ozet.maxPainStrike) : "—", clr:"var(--accent)"},
-                ].map(({lbl,val,clr})=>(
-                  <div key={lbl} style={{background:"var(--surface-2)",border:"1px solid var(--hairline)",padding:"8px 10px"}}>
-                    <div style={{fontFamily:"var(--sans)",fontSize:9,fontWeight:600,
-                      color:"var(--text-mute)",letterSpacing:"0.08em",textTransform:"uppercase",marginBottom:3}}>{lbl}</div>
-                    <div style={{fontFamily:"var(--mono)",fontSize:12,fontWeight:700,color:clr}}>{val}</div>
+                  {simge:"∑",lbl:"Toplam OI",     val:`${fmtK(d.ozet.toplamOI)} ${sym}`,  clr:"var(--text)"},
+                  {simge:"C",lbl:"Call OI",        val:`${fmtK(d.ozet.callOI)} ${sym}`,     clr:"var(--pos)"},
+                  {simge:"P",lbl:"Put OI",          val:`${fmtK(d.ozet.putOI)} ${sym}`,      clr:"var(--neg)"},
+                  {simge:"÷",lbl:"P/C Oranı",      val:d.ozet.pcRatio.toFixed(2),            clr:d.ozet.pcRatio>1?"var(--neg)":"var(--pos)"},
+                  {simge:"◆",lbl:"Max Pain",        val:d.ozet.maxPainStrike?"$"+fmt(d.ozet.maxPainStrike):"—",clr:"var(--accent)"},
+                ].map(({simge,lbl,val,clr})=>(
+                  <div key={lbl} style={{
+                    padding:"16px 0 16px 20px",
+                    borderRight:"1px solid var(--hairline)",
+                  }}>
+                    <div style={{fontFamily:"var(--serif)",fontStyle:"italic",
+                      fontSize:18,color:"var(--accent)",marginBottom:4,lineHeight:1}}>{simge}</div>
+                    <div style={{fontSize:9,letterSpacing:"0.14em",textTransform:"uppercase",
+                      color:"var(--text-mute)",fontWeight:600,marginBottom:8}}>{lbl}</div>
+                    <div style={{fontFamily:"var(--serif)",fontSize:28,lineHeight:1,
+                      color:clr,letterSpacing:"-0.02em"}}>{val}</div>
                   </div>
                 ))}
               </div>
@@ -631,44 +644,49 @@ function KapananOpsiyonlar({ sym }) {
           const liste = filtrele(d.vadesiDolanlar || []);
           if (!liste.length) return (
             <div style={{padding:"24px 0",textAlign:"center",color:"var(--text-mute)",
-              fontFamily:"var(--sans)",fontSize:10}}>
-              Bu vade grubunda {sym} opsiyonu bulunamadı
+              fontFamily:"var(--mono)",fontSize:10,letterSpacing:"0.1em"}}>
+              BU VADE GRUBUNDA {sym} OPSİYONU BULUNAMADI
             </div>
           );
           return (
             <div style={{overflowX:"auto"}}>
-              <table style={{width:"100%",borderCollapse:"collapse",fontFamily:"var(--sans)",fontSize:10}}>
+              <table style={{width:"100%",borderCollapse:"collapse",fontFamily:"var(--mono)",fontSize:11}}>
                 <thead>
                   <tr style={{borderBottom:"2px solid var(--hairline)"}}>
                     {["Kontrat","Strike","Tip","Settlement","Durum","OI","Vade"].map(h=>(
-                      <th key={h} style={{padding:"6px 8px",textAlign:"left",fontWeight:600,fontSize:9,
-                        color:"var(--text-mute)",letterSpacing:"0.08em",textTransform:"uppercase",whiteSpace:"nowrap"}}>{h}</th>
+                      <th key={h} style={{padding:"8px 10px",textAlign:"left",fontWeight:600,
+                        fontSize:9,color:"var(--text-mute)",letterSpacing:"0.1em",
+                        textTransform:"uppercase",whiteSpace:"nowrap"}}>{h}</th>
                     ))}
                   </tr>
                 </thead>
                 <tbody>
                   {liste.map((k,i)=>(
                     <tr key={i} style={{borderBottom:"1px solid var(--hairline-soft)",
-                      background:k.itm?(k.tip==="call"?"rgba(107,158,125,0.06)":"rgba(181,86,76,0.06)"):"transparent"}}>
-                      <td style={{padding:"5px 8px",fontFamily:"var(--mono)",fontSize:9,color:"var(--text-mute)"}}>{k.instrument.slice(-16)}</td>
-                      <td style={{padding:"5px 8px",fontFamily:"var(--mono)",fontWeight:700,color:"var(--text)"}}>${fmt(k.strike)}</td>
-                      <td style={{padding:"5px 8px"}}>
-                        <span style={{fontSize:8,fontWeight:700,padding:"2px 5px",
+                      background:k.itm?(k.tip==="call"?"rgba(107,158,125,0.06)":"rgba(181,86,76,0.06)"):"transparent",
+                      transition:"background 0.1s"}}
+                      onMouseEnter={e=>e.currentTarget.style.background="var(--surface-2)"}
+                      onMouseLeave={e=>e.currentTarget.style.background=k.itm?(k.tip==="call"?"rgba(107,158,125,0.06)":"rgba(181,86,76,0.06)"):"transparent"}
+                    >
+                      <td style={{padding:"6px 10px",fontSize:9,color:"var(--text-mute)"}}>{k.instrument.slice(-16)}</td>
+                      <td style={{padding:"6px 10px",fontWeight:600,color:"var(--text)"}}>${fmt(k.strike)}</td>
+                      <td style={{padding:"6px 10px"}}>
+                        <span style={{fontSize:9,fontWeight:700,padding:"2px 6px",letterSpacing:"0.06em",
                           background:k.tip==="call"?"rgba(107,158,125,0.15)":"rgba(181,86,76,0.15)",
                           color:k.tip==="call"?"var(--pos)":"var(--neg)"}}>
                           {k.tip.toUpperCase()}
                         </span>
                       </td>
-                      <td style={{padding:"5px 8px",fontFamily:"var(--mono)",fontWeight:700,color:"var(--accent)"}}>${fmt(k.settlementFiyat)}</td>
-                      <td style={{padding:"5px 8px"}}>
-                        <span style={{fontSize:8,fontWeight:700,padding:"2px 5px",
-                          background:k.itm?"rgba(107,158,125,0.15)":"rgba(90,103,118,0.15)",
+                      <td style={{padding:"6px 10px",fontWeight:600,color:"var(--accent)"}}>${fmt(k.settlementFiyat)}</td>
+                      <td style={{padding:"6px 10px"}}>
+                        <span style={{fontSize:9,fontWeight:700,padding:"2px 6px",
+                          background:k.itm?"rgba(107,158,125,0.15)":"rgba(90,103,118,0.12)",
                           color:k.itm?"var(--pos)":"var(--text-mute)"}}>
                           {k.itm?"ITM":"OTM"}
                         </span>
                       </td>
-                      <td style={{padding:"5px 8px",fontFamily:"var(--mono)",color:"var(--text-2)"}}>{fmtK(k.oi)}</td>
-                      <td style={{padding:"5px 8px",color:"var(--text-mute)",fontSize:9}}>
+                      <td style={{padding:"6px 10px",color:"var(--text-2)"}}>{fmtK(k.oi)}</td>
+                      <td style={{padding:"6px 10px",color:"var(--text-mute)",fontSize:9}}>
                         {new Date(k.vade).toLocaleDateString("tr-TR",{day:"2-digit",month:"short",year:"2-digit"})}
                       </td>
                     </tr>
@@ -683,12 +701,13 @@ function KapananOpsiyonlar({ sym }) {
         {!yukl && sekme === "buyuk" && d && (
           d.buyukKapanislar?.length > 0 ? (
             <div style={{overflowX:"auto"}}>
-              <table style={{width:"100%",borderCollapse:"collapse",fontFamily:"var(--sans)",fontSize:10}}>
+              <table style={{width:"100%",borderCollapse:"collapse",fontFamily:"var(--mono)",fontSize:11}}>
                 <thead>
                   <tr style={{borderBottom:"2px solid var(--hairline)"}}>
                     {["Kontrat","Miktar","Yön","Fiyat","IV","Index","Zaman"].map(h=>(
-                      <th key={h} style={{padding:"6px 8px",textAlign:"left",fontWeight:600,fontSize:9,
-                        color:"var(--text-mute)",letterSpacing:"0.08em",textTransform:"uppercase",whiteSpace:"nowrap"}}>{h}</th>
+                      <th key={h} style={{padding:"8px 10px",textAlign:"left",fontWeight:600,
+                        fontSize:9,color:"var(--text-mute)",letterSpacing:"0.1em",
+                        textTransform:"uppercase",whiteSpace:"nowrap"}}>{h}</th>
                     ))}
                   </tr>
                 </thead>
@@ -696,20 +715,22 @@ function KapananOpsiyonlar({ sym }) {
                   {d.buyukKapanislar.map((k,i)=>{
                     const al = k.yon === "buy";
                     return (
-                      <tr key={i} style={{borderBottom:"1px solid var(--hairline-soft)"}}>
-                        <td style={{padding:"5px 8px",fontFamily:"var(--mono)",fontSize:9,color:"var(--text-mute)"}}>{k.instrument.slice(-16)}</td>
-                        <td style={{padding:"5px 8px",fontFamily:"var(--mono)",fontWeight:700,color:"var(--text)"}}>{fmt(k.miktar)} {sym}</td>
-                        <td style={{padding:"5px 8px"}}>
-                          <span style={{fontSize:8,fontWeight:700,padding:"2px 5px",
+                      <tr key={i} style={{borderBottom:"1px solid var(--hairline-soft)",transition:"background 0.1s"}}
+                        onMouseEnter={e=>e.currentTarget.style.background="var(--surface-2)"}
+                        onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
+                        <td style={{padding:"6px 10px",fontSize:9,color:"var(--text-mute)"}}>{k.instrument.slice(-16)}</td>
+                        <td style={{padding:"6px 10px",fontWeight:600,color:"var(--text)"}}>{fmt(k.miktar)} {sym}</td>
+                        <td style={{padding:"6px 10px"}}>
+                          <span style={{fontSize:9,fontWeight:700,padding:"2px 6px",letterSpacing:"0.06em",
                             background:al?"rgba(107,158,125,0.15)":"rgba(181,86,76,0.15)",
                             color:al?"var(--pos)":"var(--neg)"}}>
                             {al?"ALIM":"SATIM"}
                           </span>
                         </td>
-                        <td style={{padding:"5px 8px",fontFamily:"var(--mono)",color:"var(--accent)"}}>{k.fiyat.toFixed(4)}</td>
-                        <td style={{padding:"5px 8px",fontFamily:"var(--mono)",color:"var(--text-2)"}}>{k.iv.toFixed(1)}%</td>
-                        <td style={{padding:"5px 8px",fontFamily:"var(--mono)",color:"var(--text)"}}>${fmt(k.indexFiyat)}</td>
-                        <td style={{padding:"5px 8px",color:"var(--text-mute)",fontSize:9}}>
+                        <td style={{padding:"6px 10px",color:"var(--accent)"}}>{k.fiyat.toFixed(4)}</td>
+                        <td style={{padding:"6px 10px",color:"var(--text-2)"}}>{k.iv.toFixed(1)}%</td>
+                        <td style={{padding:"6px 10px",color:"var(--text)"}}>${fmt(k.indexFiyat)}</td>
+                        <td style={{padding:"6px 10px",color:"var(--text-mute)",fontSize:9}}>
                           {new Date(k.timestamp).toLocaleTimeString("tr-TR",{hour:"2-digit",minute:"2-digit",second:"2-digit"})}
                         </td>
                       </tr>
@@ -719,8 +740,9 @@ function KapananOpsiyonlar({ sym }) {
               </table>
             </div>
           ) : (
-            <div style={{padding:"24px 0",textAlign:"center",color:"var(--text-mute)",fontFamily:"var(--sans)",fontSize:10}}>
-              Büyük kapanış işlemi bulunamadı
+            <div style={{padding:"32px 0",textAlign:"center",color:"var(--text-mute)",
+              fontFamily:"var(--mono)",fontSize:10,letterSpacing:"0.1em"}}>
+              BÜYÜK KAPANIS İŞLEMİ BULUNAMADI
             </div>
           )
         )}
@@ -1989,10 +2011,19 @@ function OpsiyonSayfasi({ sym, vade }) {
         <KuantumDuvarlar data={data} sym={sym}/>
       </section>
 
-      {/* iii. Toplu Greek'ler */}
+      {/* iii. Kapanan Opsiyonlar */}
       <section className="section">
         <div className="section-head">
-          <h2 className="section-title"><span className="section-nbr">iii.</span>Toplu Greek'ler</h2>
+          <h2 className="section-title"><span className="section-nbr">iii.</span>Order Flow · Kapanan</h2>
+          <span className="section-meta">GAMMA EXPOSURE · OI PER STRIKE · DERIBIT</span>
+        </div>
+        <KapananOpsiyonlar sym={sym}/>
+      </section>
+
+      {/* iv. Toplu Greek'ler */}
+      <section className="section">
+        <div className="section-head">
+          <h2 className="section-title"><span className="section-nbr">iv.</span>Toplu Greek'ler</h2>
           <span className="section-meta">DEALER-NORMALIZE · USD CİNSİNDEN</span>
         </div>
         <TopluGreekler data={data}/>
@@ -2062,8 +2093,6 @@ function OpsiyonSayfasi({ sym, vade }) {
             {new Date().toLocaleDateString("tr-TR",{weekday:"long",day:"numeric",month:"long",year:"numeric"})} · {data.stats.rows} kontrat · {data.stats.expiries} vade
           </div>
         </div>
-        {/* Kapanan Opsiyonlar */}
-        <KapananOpsiyonlar sym={sym}/>
         <div className="footer-pagenum">— {sym} Gamma —</div>
       </footer>
     </>
