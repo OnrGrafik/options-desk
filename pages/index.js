@@ -232,15 +232,14 @@ function KapananOpsiyonlar({ sym }) {
   const [veri,  setVeri]  = useState(null);
   const [yukl,  setYukl]  = useState(true);
   const [hata,  setHata]  = useState(null);
-  const [hG,    setHG]    = useState(null);   // gamma hover
-  const [hF,    setHF]    = useState(null);   // flow hover
+  const [hG,    setHG]    = useState(null);
+  const [hF,    setHF]    = useState(null);
   const cache = useRef({ veri: null, ts: 0, sym: "" });
 
   useEffect(() => {
     let cancelled = false;
     const yukle = async () => {
       const c = cache.current;
-      // 5dk ve aynı sembol ise cache'den sun
       if (c.veri && c.sym === sym && Date.now() - c.ts < 5*60*1000) {
         if (!cancelled) { setVeri(c.veri); setYukl(false); }
         return;
@@ -254,7 +253,6 @@ function KapananOpsiyonlar({ sym }) {
         c.veri = d; c.ts = Date.now(); c.sym = sym;
         if (!cancelled) setVeri(d);
       } catch(e) {
-        console.error("Orderflow:", e);
         if (!cancelled) setHata(e.message);
       }
       if (!cancelled) setYukl(false);
@@ -264,119 +262,73 @@ function KapananOpsiyonlar({ sym }) {
     return () => { cancelled = true; clearInterval(iv); };
   }, [sym]);
 
+  // fmt — tasarım dosyasıyla birebir (virgülsüz TR formatı)
   const fmt  = n => n != null ? Math.round(n).toLocaleString("tr-TR") : "—";
   const fmtV = n => {
     if (!n && n !== 0) return "—";
     const a = Math.abs(n);
-    if (a >= 1000) return (n/1000).toFixed(1)+"K";
-    return n.toFixed(2);
+    return a >= 1000 ? (n/1000).toFixed(1)+"K" : n.toFixed(1);
   };
 
   if (yukl) return (
-    <div style={{padding:"40px 0",textAlign:"center",
-      color:"var(--text-mute)",fontFamily:"var(--mono)",
-      fontSize:10,letterSpacing:"0.16em"}}>
+    <div style={{padding:"40px 0",textAlign:"center",color:"var(--text-mute)",
+      fontFamily:"var(--mono)",fontSize:10,letterSpacing:"0.16em"}}>
       LOADING ORDER FLOW…
     </div>
   );
   if (hata || !veri) return (
-    <div style={{padding:"40px 0",textAlign:"center",
-      color:"var(--neg)",fontFamily:"var(--mono)",fontSize:10}}>
+    <div style={{padding:"40px 0",textAlign:"center",color:"var(--neg)",
+      fontFamily:"var(--mono)",fontSize:10}}>
       {hata || "Veri alınamadı"}
     </div>
   );
 
   const { spot, gammaUnits = [], flowByStrike = [], instruments = 0 } = veri;
   const lo = spot * 0.55, hi = spot * 1.35;
-  const gVis = gammaUnits.filter(g => g.strike >= lo && g.strike <= hi);
-  const fVis = flowByStrike.filter(f => f.strike >= lo && f.strike <= hi);
 
-  // ── Paylaşılan SVG boyutları — tasarımla birebir
+  // ── Paylaşılan SVG sabitleri (tasarım dosyasıyla birebir)
   const W = 1000, H = 260;
   const pad = { top: 20, right: 28, bottom: 44, left: 56 };
   const cW = W - pad.left - pad.right;
   const cH = H - pad.top - pad.bottom;
+  const xScale = s => pad.left + ((s - lo) / (hi - lo)) * cW;
+  const yScale = (v, yMax) => pad.top + cH/2 - (v/yMax) * (cH/2);
+  const zeroY  = yMx => pad.top + cH/2;
 
-  const xScale = s  => pad.left + ((s - lo) / (hi - lo)) * cW;
-  const yMid   = pad.top + cH / 2;
-  const yS     = (v, yMax) => yMid - (v / yMax) * (cH / 2);
-
-  // X ekseni tikleri
   const xTicks = [];
   for (let p = Math.ceil(lo/8000)*8000; p <= hi; p += 8000) xTicks.push(p);
 
-  const xAxisLabels = (
-    <>
-      {xTicks.map(t => {
-        const x = xScale(t);
-        return (
-          <g key={t}>
-            <line x1={x} x2={x} y1={H-pad.bottom} y2={H-pad.bottom+4}
-                  stroke="var(--hairline-strong)"/>
-            <text x={x} y={H-pad.bottom+18} textAnchor="middle"
-                  fontFamily="var(--mono)" fontSize="10" fill="var(--text-mute)">
-              {(t/1000).toFixed(0)}K
-            </text>
-          </g>
-        );
-      })}
-      <text x={pad.left+cW/2} y={H-pad.bottom+36} textAnchor="middle"
-            fontFamily="var(--mono)" fontSize="9"
-            fill="var(--text-mute)" letterSpacing="0.12em">
-        STRIKE
-      </text>
-    </>
-  );
-
-  // SPOT çizgisi
-  const spotLine = (
-    <g>
-      <line x1={xScale(spot)} x2={xScale(spot)} y1={pad.top} y2={H-pad.bottom}
-            stroke="var(--accent)" strokeWidth="1" strokeDasharray="3 3" opacity="0.6"/>
-      <text x={xScale(spot)} y={pad.top-4} textAnchor="middle"
-            fontFamily="var(--mono)" fontSize="9" fontWeight="600"
-            fill="var(--accent)" letterSpacing="0.08em">
-        SPOT · ${fmt(spot)}
-      </text>
-    </g>
-  );
-
-  // ══════════════════════════════════════════════
-  // SOL GRAFİK — Net GEX per strike
-  // ══════════════════════════════════════════════
+  // ════════════════════════════════════════
+  // SOL — GammaHistogram (tasarım birebir)
+  // ════════════════════════════════════════
+  const gVis = gammaUnits.filter(g => g.strike >= lo && g.strike <= hi);
   const renderGamma = () => {
     if (!gVis.length) return (
-      <div style={{height:H, display:"flex", alignItems:"center",
-        justifyContent:"center", color:"var(--text-mute)",
-        fontFamily:"var(--mono)", fontSize:9, letterSpacing:"0.1em"}}>
-        GEX VERİSİ YOK
-      </div>
+      <div style={{height:H,display:"flex",alignItems:"center",justifyContent:"center",
+        color:"var(--text-mute)",fontFamily:"var(--mono)",fontSize:9}}>VERİ YOK</div>
     );
-
     const maxAbs = Math.max(...gVis.map(g => Math.abs(g.net)), 1e-6);
     const yMax   = maxAbs * 1.1;
     const barW   = Math.max((cW / gVis.length) * 0.55, 1);
-    const yTicks = [-1,-0.5,0,0.5,1].map(t => t * yMax);
-
-    // Peak'ler — annotation için
-    const callPeak = [...gVis].sort((a,b) => b.net - a.net)[0];
-    const putPeak  = [...gVis].sort((a,b) => a.net - b.net)[0];
+    const yTicks = [-1,-0.5,0,0.5,1].map(t => t*yMax);
+    const callPeak = [...gVis].sort((a,b)=>b.net-a.net)[0];
+    const putPeak  = [...gVis].sort((a,b)=>a.net-b.net)[0];
+    const zY = pad.top + cH/2;
 
     return (
       <div style={{position:"relative"}}>
         <svg viewBox={`0 0 ${W} ${H}`}
-             style={{width:"100%",height:"auto",display:"block",cursor:"crosshair"}}
-             onMouseMove={e => {
-               const r = e.currentTarget.getBoundingClientRect();
-               const mx = (e.clientX-r.left)/r.width*W;
-               const s  = lo + ((mx-pad.left)/cW)*(hi-lo);
-               let best=null, bd=Infinity;
-               for(const g of gVis){ const d=Math.abs(g.strike-s); if(d<bd){bd=d;best=g;} }
-               setHG(best&&bd<(hi-lo)*0.015?best:null);
-             }}
-             onMouseLeave={()=>setHG(null)}>
+          style={{width:"100%",height:"auto",display:"block",cursor:"crosshair"}}
+          onMouseMove={e=>{
+            const r=e.currentTarget.getBoundingClientRect();
+            const mx=(e.clientX-r.left)/r.width*W;
+            const s=lo+((mx-pad.left)/cW)*(hi-lo);
+            let best=null,bd=Infinity;
+            for(const g of gVis){const d=Math.abs(g.strike-s);if(d<bd){bd=d;best=g;}}
+            setHG(best&&bd<(hi-lo)*0.012?best:null);
+          }}
+          onMouseLeave={()=>setHG(null)}>
 
-          {/* Header */}
           <text x={pad.left} y={14} fontFamily="var(--mono)" fontSize="9"
                 fill="var(--text-mute)" letterSpacing="0.16em">
             NET Γ · {sym} PER STRIKE
@@ -386,9 +338,8 @@ function KapananOpsiyonlar({ sym }) {
             {gVis.length} STRIKES
           </text>
 
-          {/* Y grid */}
           {yTicks.map((t,i) => {
-            const y = yS(t, yMax);
+            const y = yScale(t, yMax);
             if (y < pad.top-2 || y > H-pad.bottom+2) return null;
             const isZ = Math.abs(t) < 1e-9;
             return (
@@ -404,36 +355,30 @@ function KapananOpsiyonlar({ sym }) {
             );
           })}
 
-          {/* Barlar */}
           {gVis.map(g => {
-            const x  = xScale(g.strike);
-            const h  = (Math.abs(g.net)/yMax) * (cH/2);
+            const x   = xScale(g.strike);
+            const h   = (Math.abs(g.net)/yMax)*(cH/2);
             if (h < 0.4) return null;
-            const isPos = g.net > 0;
-            const isH  = hG?.strike === g.strike;
+            const isP = g.net > 0;
+            const isH = hG?.strike === g.strike;
             return (
               <g key={g.strike}>
-                <rect x={x-barW/2} y={isPos?yMid-h:yMid}
-                      width={barW} height={h}
-                      fill={isPos?"var(--pos)":"var(--neg)"}
-                      opacity={isH?1:0.88}/>
+                <rect x={x-barW/2} y={isP?zY-h:zY} width={barW} height={h}
+                      fill={isP?"var(--pos)":"var(--neg)"} opacity={isH?1:0.88}/>
                 {isH && <line x1={x} x2={x} y1={pad.top} y2={H-pad.bottom}
-                      stroke="var(--accent)" strokeWidth="0.6"
-                      strokeDasharray="2 3" opacity="0.5"/>}
+                      stroke="var(--accent)" strokeWidth="0.6" strokeDasharray="2 3" opacity="0.5"/>}
               </g>
             );
           })}
 
-          {/* Call Wall annotation */}
           {callPeak?.net > 0.05 && (() => {
             const x = xScale(callPeak.strike);
-            const y = yS(callPeak.net, yMax);
-            const tooClose = Math.abs(x - xScale(spot)) < 60;
+            const y = yScale(callPeak.net, yMax);
+            const tooClose = Math.abs(x - xScale(spot)) < 64;
             return (
               <g>
-                <line x1={x} x2={x} y1={y-16} y2={y-4}
-                      stroke="var(--pos)" strokeWidth="0.8"/>
-                <text x={tooClose?x+50:x} y={y-20} textAnchor="middle"
+                <line x1={x} x2={x} y1={y-16} y2={y-4} stroke="var(--pos)" strokeWidth="0.8"/>
+                <text x={tooClose?x+70:x} y={y-20} textAnchor="middle"
                       fontFamily="var(--mono)" fontSize="9" fontWeight="600"
                       fill="var(--pos)" letterSpacing="0.04em">
                   CALL WALL · ${fmt(callPeak.strike)}
@@ -442,14 +387,12 @@ function KapananOpsiyonlar({ sym }) {
             );
           })()}
 
-          {/* Put Wall annotation */}
           {putPeak?.net < -0.05 && (() => {
             const x = xScale(putPeak.strike);
-            const y = yS(putPeak.net, yMax);
+            const y = yScale(putPeak.net, yMax);
             return (
               <g>
-                <line x1={x} x2={x} y1={y+4} y2={y+16}
-                      stroke="var(--neg)" strokeWidth="0.8"/>
+                <line x1={x} x2={x} y1={y+4} y2={y+16} stroke="var(--neg)" strokeWidth="0.8"/>
                 <text x={x} y={y+26} textAnchor="middle"
                       fontFamily="var(--mono)" fontSize="9" fontWeight="600"
                       fill="var(--neg)" letterSpacing="0.04em">
@@ -459,31 +402,47 @@ function KapananOpsiyonlar({ sym }) {
             );
           })()}
 
-          {spotLine}
-          {xAxisLabels}
+          <line x1={xScale(spot)} x2={xScale(spot)} y1={pad.top} y2={H-pad.bottom}
+                stroke="var(--accent)" strokeWidth="1" strokeDasharray="3 3" opacity="0.6"/>
+          <text x={xScale(spot)} y={pad.top-4} textAnchor="middle"
+                fontFamily="var(--mono)" fontSize="9" fontWeight="600"
+                fill="var(--accent)" letterSpacing="0.08em">
+            SPOT · ${fmt(spot)}
+          </text>
 
-          {/* Y label */}
-          <text transform={`translate(${pad.left-42},${pad.top+cH/2}) rotate(-90)`}
+          {xTicks.map(t => {
+            const x = xScale(t);
+            return (
+              <g key={t}>
+                <line x1={x} x2={x} y1={H-pad.bottom} y2={H-pad.bottom+4} stroke="var(--hairline-strong)"/>
+                <text x={x} y={H-pad.bottom+18} textAnchor="middle"
+                      fontFamily="var(--mono)" fontSize="10" fill="var(--text-mute)">
+                  {(t/1000).toFixed(0)}K
+                </text>
+              </g>
+            );
+          })}
+          <text x={pad.left+cW/2} y={H-pad.bottom+36} textAnchor="middle"
+                fontFamily="var(--mono)" fontSize="9" fill="var(--text-mute)" letterSpacing="0.12em">
+            STRIKE
+          </text>
+          <text transform={`translate(${pad.left-38},${pad.top+cH/2}) rotate(-90)`}
                 textAnchor="middle" fontFamily="var(--mono)" fontSize="9"
-                fill="var(--text-mute)" letterSpacing="0.1em">
+                fill="var(--text-mute)" letterSpacing="0.12em">
             NET Γ (BTC)
           </text>
         </svg>
 
-        {/* Tooltip */}
         {hG && (
           <div style={{position:"absolute",top:12,right:12,pointerEvents:"none",
             background:"var(--surface)",border:"1px solid var(--hairline-strong)",
-            padding:"10px 14px",minWidth:200,fontFamily:"var(--mono)",
-            fontSize:11,color:"var(--text-2)"}}>
-            <div style={{display:"flex",justifyContent:"space-between",
-              marginBottom:8,paddingBottom:6,borderBottom:"1px solid var(--hairline)"}}>
+            padding:"10px 14px",minWidth:200,fontFamily:"var(--mono)",fontSize:11,color:"var(--text-2)"}}>
+            <div style={{display:"flex",justifyContent:"space-between",marginBottom:8,
+              paddingBottom:6,borderBottom:"1px solid var(--hairline)"}}>
               <span style={{fontFamily:"var(--serif)",fontSize:16,color:"var(--text)"}}>
                 ${fmt(hG.strike)}
               </span>
-              <span style={{color:"var(--text-mute)",fontSize:9,letterSpacing:"0.1em"}}>
-                GEX · {sym}
-              </span>
+              <span style={{color:"var(--text-mute)",fontSize:9,letterSpacing:"0.1em"}}>GAMMA · {sym}</span>
             </div>
             {[
               ["Call γ", `+${hG.callGamma.toFixed(3)}`, "var(--pos)"],
@@ -492,7 +451,7 @@ function KapananOpsiyonlar({ sym }) {
                           hG.net>=0?"var(--pos)":"var(--neg)"],
               ["Call OI", fmt(hG.callOI)+" "+sym,         "var(--text-2)"],
               ["Put OI",  fmt(hG.putOI)+" "+sym,          "var(--text-2)"],
-            ].map(([l,v,c]) => (
+            ].map(([l,v,c])=>(
               <div key={l} style={{display:"flex",justifyContent:"space-between",
                 padding:"3px 0",borderBottom:"1px solid var(--hairline-soft)"}}>
                 <span style={{color:"var(--text-mute)"}}>{l}</span>
@@ -505,51 +464,63 @@ function KapananOpsiyonlar({ sym }) {
     );
   };
 
-  // ══════════════════════════════════════════════
-  // SAĞ GRAFİK — 24h Buy↑ / Sell↓ per strike
-  // ══════════════════════════════════════════════
-  const renderFlow = () => {
+  // ════════════════════════════════════════
+  // SAĞ — VolumeProfile (tasarım dosyasıyla birebir)
+  // ════════════════════════════════════════
+  const fVis = flowByStrike.filter(f => f.strike >= lo && f.strike <= hi);
+  const renderVolume = () => {
     if (!fVis.length) return (
-      <div style={{height:H, display:"flex", alignItems:"center",
-        justifyContent:"center", color:"var(--text-mute)",
-        fontFamily:"var(--mono)", fontSize:9, letterSpacing:"0.1em"}}>
-        24H HACİM VERİSİ YOK
-      </div>
+      <div style={{height:H,display:"flex",alignItems:"center",justifyContent:"center",
+        color:"var(--text-mute)",fontFamily:"var(--mono)",fontSize:9}}>VERİ YOK</div>
     );
 
-    const maxAbs = Math.max(...fVis.map(f => Math.max(f.totalBuy||0, f.totalSell||0)), 1e-6);
-    const yMax   = maxAbs * 1.1;
-    const barW   = Math.max((cW / fVis.length) * 0.55, 1);
+    const totals = fVis.map(f => ({
+      ...f,
+      totalBuy:  (f.callsBuy||0)+(f.putsBuy||0)+(f.callBuyBlocked||0)+(f.putBuyBlocked||0),
+      totalSell: (f.callsSell||0)+(f.putsSell||0)+(f.callSellBlocked||0)+(f.putSellBlocked||0),
+    }));
+
+    const maxAbs = Math.max(
+      Math.max(...totals.map(t=>t.totalBuy)),
+      Math.max(...totals.map(t=>t.totalSell)),
+      1
+    );
+    const yMax = maxAbs * 1.1;
+    const barW = Math.max((cW / fVis.length) * 0.55, 1);
     const yTicks = [-1,-0.5,0,0.5,1].map(t => t*yMax);
 
-    // Tasarımdaki renkler
-    const buyCats  = [
-      {k:"callBuy",  c:"#5b8fc7"},
-      {k:"putBuy",   c:"#d4a05c"},
+    // Tasarım dosyasıyla birebir aynı renkler
+    const buyCats = [
+      { k:"callsBuy",       c:"#5b8fc7" },
+      { k:"putsBuy",        c:"#d4a05c" },
+      { k:"callBuyBlocked", c:"#3a5878" },
+      { k:"putBuyBlocked",  c:"#8a6b3a" },
     ];
     const sellCats = [
-      {k:"callSell", c:"#a8c5e0"},
-      {k:"putSell",  c:"#e8c89c"},
+      { k:"callsSell",       c:"#a8c5e0" },
+      { k:"putsSell",        c:"#e8c89c" },
+      { k:"callSellBlocked", c:"#6b8a9c" },
+      { k:"putSellBlocked",  c:"#a8956b" },
     ];
 
-    const topBuy  = [...fVis].sort((a,b) => (b.totalBuy||0)-(a.totalBuy||0))[0];
-    const topSell = [...fVis].sort((a,b) => (b.totalSell||0)-(a.totalSell||0))[0];
+    const topBuy  = [...totals].sort((a,b)=>b.totalBuy-a.totalBuy)[0];
+    const topSell = [...totals].sort((a,b)=>b.totalSell-a.totalSell)[0];
+    const zY = pad.top + cH/2;
 
     return (
       <div style={{position:"relative"}}>
         <svg viewBox={`0 0 ${W} ${H}`}
-             style={{width:"100%",height:"auto",display:"block",cursor:"crosshair"}}
-             onMouseMove={e => {
-               const r = e.currentTarget.getBoundingClientRect();
-               const mx = (e.clientX-r.left)/r.width*W;
-               const s  = lo + ((mx-pad.left)/cW)*(hi-lo);
-               let best=null, bd=Infinity;
-               for(const f of fVis){ const d=Math.abs(f.strike-s); if(d<bd){bd=d;best=f;} }
-               setHF(best&&bd<(hi-lo)*0.015?best:null);
-             }}
-             onMouseLeave={()=>setHF(null)}>
+          style={{width:"100%",height:"auto",display:"block",cursor:"crosshair"}}
+          onMouseMove={e=>{
+            const r=e.currentTarget.getBoundingClientRect();
+            const mx=(e.clientX-r.left)/r.width*W;
+            const s=lo+((mx-pad.left)/cW)*(hi-lo);
+            let best=null,bd=Infinity;
+            for(const t of totals){const d=Math.abs(t.strike-s);if(d<bd){bd=d;best=t;}}
+            setHF(best&&bd<(hi-lo)*0.012?best:null);
+          }}
+          onMouseLeave={()=>setHF(null)}>
 
-          {/* Header */}
           <text x={pad.left} y={14} fontFamily="var(--mono)" fontSize="9"
                 fill="var(--text-mute)" letterSpacing="0.16em">
             BUY ↑ · SELL ↓ · CONTRACTS
@@ -559,9 +530,8 @@ function KapananOpsiyonlar({ sym }) {
             {fVis.length} STRIKES · 24H
           </text>
 
-          {/* Y grid */}
           {yTicks.map((t,i) => {
-            const y = yS(t, yMax);
+            const y = yScale(t, yMax);
             if (y < pad.top-2 || y > H-pad.bottom+2) return null;
             const isZ = Math.abs(t) < 1e-9;
             return (
@@ -571,53 +541,47 @@ function KapananOpsiyonlar({ sym }) {
                       strokeWidth={isZ?1:0.6}/>
                 <text x={pad.left-8} y={y+3} textAnchor="end"
                       fontFamily="var(--mono)" fontSize="9" fill="var(--text-mute)">
-                  {t===0?"0":Math.abs(t)>=1000?`${(t/1000).toFixed(1)}K`:t.toFixed(1)}
+                  {t===0?"0":Math.abs(t)>=1000?`${(t/1000).toFixed(1)}K`:Math.round(t)}
                 </text>
               </g>
             );
           })}
 
-          {/* Stacked bars */}
-          {fVis.map(f => {
-            const x   = xScale(f.strike);
-            const isH = hF?.strike === f.strike;
-
+          {totals.map(t => {
+            const x   = xScale(t.strike);
+            const isH = hF?.strike === t.strike;
             let buyOff = 0;
             const buyBars = buyCats.map(cat => {
-              const v = f[cat.k] || 0;
-              if (v < 0.001) return null;
+              const v = t[cat.k] || 0;
+              if (v < 0.5) return null;
               const h = (v/yMax)*(cH/2);
-              const y = yMid - buyOff - h;
+              const y = zY - buyOff - h;
               buyOff += h;
               return <rect key={cat.k} x={x-barW/2} y={y} width={barW} height={h}
-                           fill={cat.c} opacity={isH?1:0.9}/>;
+                           fill={cat.c} opacity={isH?1:0.92}/>;
             });
-
             let sellOff = 0;
             const sellBars = sellCats.map(cat => {
-              const v = f[cat.k] || 0;
-              if (v < 0.001) return null;
+              const v = t[cat.k] || 0;
+              if (v < 0.5) return null;
               const h = (v/yMax)*(cH/2);
-              const y = yMid + sellOff;
+              const y = zY + sellOff;
               sellOff += h;
               return <rect key={cat.k} x={x-barW/2} y={y} width={barW} height={h}
-                           fill={cat.c} opacity={isH?1:0.9}/>;
+                           fill={cat.c} opacity={isH?1:0.92}/>;
             });
-
             return (
-              <g key={f.strike}>
+              <g key={t.strike}>
                 {buyBars}{sellBars}
                 {isH && <line x1={x} x2={x} y1={pad.top} y2={H-pad.bottom}
-                      stroke="var(--accent)" strokeWidth="0.6"
-                      strokeDasharray="2 3" opacity="0.5"/>}
+                      stroke="var(--accent)" strokeWidth="0.6" strokeDasharray="2 3" opacity="0.5"/>}
               </g>
             );
           })}
 
-          {/* BUY PEAK */}
-          {topBuy?.totalBuy > 0 && (() => {
+          {topBuy && (() => {
             const x = xScale(topBuy.strike);
-            const y = yS(topBuy.totalBuy, yMax);
+            const y = yScale(topBuy.totalBuy, yMax);
             return (
               <g>
                 <line x1={x} x2={x} y1={y-16} y2={y-4} stroke="#5b8fc7" strokeWidth="0.8"/>
@@ -628,11 +592,9 @@ function KapananOpsiyonlar({ sym }) {
               </g>
             );
           })()}
-
-          {/* SELL PEAK */}
-          {topSell?.totalSell > 0 && (() => {
+          {topSell && (() => {
             const x = xScale(topSell.strike);
-            const y = yS(-topSell.totalSell, yMax);
+            const y = yScale(-topSell.totalSell, yMax);
             return (
               <g>
                 <line x1={x} x2={x} y1={y+4} y2={y+16} stroke="#d4a05c" strokeWidth="0.8"/>
@@ -644,25 +606,44 @@ function KapananOpsiyonlar({ sym }) {
             );
           })()}
 
-          {spotLine}
-          {xAxisLabels}
+          <line x1={xScale(spot)} x2={xScale(spot)} y1={pad.top} y2={H-pad.bottom}
+                stroke="var(--accent)" strokeWidth="1" strokeDasharray="3 3" opacity="0.6"/>
+          <text x={xScale(spot)} y={pad.top-4} textAnchor="middle"
+                fontFamily="var(--mono)" fontSize="9" fontWeight="600"
+                fill="var(--accent)" letterSpacing="0.08em">
+            SPOT · ${fmt(spot)}
+          </text>
 
-          {/* Y label */}
-          <text transform={`translate(${pad.left-42},${pad.top+cH/2}) rotate(-90)`}
+          {xTicks.map(t => {
+            const x = xScale(t);
+            return (
+              <g key={t}>
+                <line x1={x} x2={x} y1={H-pad.bottom} y2={H-pad.bottom+4} stroke="var(--hairline-strong)"/>
+                <text x={x} y={H-pad.bottom+18} textAnchor="middle"
+                      fontFamily="var(--mono)" fontSize="10" fill="var(--text-mute)">
+                  {(t/1000).toFixed(0)}K
+                </text>
+              </g>
+            );
+          })}
+          <text x={pad.left+cW/2} y={H-pad.bottom+36} textAnchor="middle"
+                fontFamily="var(--mono)" fontSize="9" fill="var(--text-mute)" letterSpacing="0.12em">
+            STRIKE
+          </text>
+          <text transform={`translate(${pad.left-38},${pad.top+cH/2}) rotate(-90)`}
                 textAnchor="middle" fontFamily="var(--mono)" fontSize="9"
-                fill="var(--text-mute)" letterSpacing="0.1em">
+                fill="var(--text-mute)" letterSpacing="0.12em">
             VOLUME
           </text>
         </svg>
 
-        {/* Tooltip */}
         {hF && (
           <div style={{position:"absolute",top:12,right:12,pointerEvents:"none",
             background:"var(--surface)",border:"1px solid var(--hairline-strong)",
-            padding:"10px 14px",minWidth:220,fontFamily:"var(--mono)",
-            fontSize:11,color:"var(--text-2)",zIndex:5}}>
-            <div style={{display:"flex",justifyContent:"space-between",
-              marginBottom:8,paddingBottom:6,borderBottom:"1px solid var(--hairline)"}}>
+            padding:"10px 14px",minWidth:220,fontFamily:"var(--mono)",fontSize:11,
+            color:"var(--text-2)",zIndex:5}}>
+            <div style={{display:"flex",justifyContent:"space-between",marginBottom:8,
+              paddingBottom:6,borderBottom:"1px solid var(--hairline)"}}>
               <span style={{fontFamily:"var(--serif)",fontSize:16,color:"var(--text)"}}>
                 ${fmt(hF.strike)}
               </span>
@@ -671,100 +652,104 @@ function KapananOpsiyonlar({ sym }) {
               </span>
             </div>
             {[
-              ["Call Buy",  fmtV(hF.callBuy||0),  "#5b8fc7"],
-              ["Put Buy",   fmtV(hF.putBuy||0),   "#d4a05c"],
-              ["Call Sell", fmtV(hF.callSell||0), "#a8c5e0"],
-              ["Put Sell",  fmtV(hF.putSell||0),  "#e8c89c"],
-              ["Net",
-                fmtV((hF.totalBuy||0)-(hF.totalSell||0)),
-                (hF.totalBuy||0)>(hF.totalSell||0)?"var(--pos)":"var(--neg)"],
-            ].map(([l,v,c]) => (
+              ["Buy total",  fmtV(hF.totalBuy||0),  "#5b8fc7"],
+              ["Sell total", fmtV(hF.totalSell||0), "#d4a05c"],
+            ].map(([l,v,c])=>(
               <div key={l} style={{display:"flex",justifyContent:"space-between",
-                padding:"3px 0",borderBottom:"1px solid var(--hairline-soft)"}}>
+                padding:"3px 0"}}>
                 <span style={{color:"var(--text-mute)"}}>{l}</span>
                 <span style={{color:c,fontWeight:600}}>{v}</span>
               </div>
             ))}
+            <div style={{borderTop:"1px solid var(--hairline)",marginTop:6,paddingTop:6}}>
+              {[
+                ["Calls Buy",  fmtV(hF.callsBuy||0),  "#5b8fc7"],
+                ["Puts Buy",   fmtV(hF.putsBuy||0),   "#d4a05c"],
+                ["Calls Sell", fmtV(hF.callsSell||0), "#a8c5e0"],
+                ["Puts Sell",  fmtV(hF.putsSell||0),  "#e8c89c"],
+                ["Blocks",     fmtV((hF.callBuyBlocked||0)+(hF.callSellBlocked||0)+
+                                    (hF.putBuyBlocked||0)+(hF.putSellBlocked||0)), "var(--accent)"],
+              ].map(([l,v,c])=>(
+                <div key={l} style={{display:"flex",justifyContent:"space-between",padding:"3px 0"}}>
+                  <span style={{color:"var(--text-mute)"}}>{l}</span>
+                  <span style={{color:c,fontWeight:600}}>{v}</span>
+                </div>
+              ))}
+            </div>
           </div>
         )}
       </div>
     );
   };
 
-  // 24h flow toplamları
-  const flowTotals = fVis.length ? {
-    callBuy:  fVis.reduce((a,f)=>a+(f.callBuy||0), 0),
-    callSell: fVis.reduce((a,f)=>a+(f.callSell||0),0),
-    putBuy:   fVis.reduce((a,f)=>a+(f.putBuy||0),  0),
-    putSell:  fVis.reduce((a,f)=>a+(f.putSell||0), 0),
+  // ── Toplamlar (tasarımdaki "24h Flow · totals" bölümü)
+  const totals24h = fVis.length ? {
+    callsBuy:  fVis.reduce((a,f)=>a+(f.callsBuy||0),0),
+    putsBuy:   fVis.reduce((a,f)=>a+(f.putsBuy||0),0),
+    callsSell: fVis.reduce((a,f)=>a+(f.callsSell||0),0),
+    putsSell:  fVis.reduce((a,f)=>a+(f.putsSell||0),0),
+    callBuyBlocked: fVis.reduce((a,f)=>a+(f.callBuyBlocked||0),0),
+    putBuyBlocked:  fVis.reduce((a,f)=>a+(f.putBuyBlocked||0),0),
   } : null;
 
   return (
     <div>
-      {/* İki grafik yan yana — tasarımla birebir */}
+      {/* İki grafik yan yana */}
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:32,marginBottom:32}}>
-        {/* Sol */}
         <div>
           <div style={{display:"flex",justifyContent:"space-between",
             alignItems:"baseline",marginBottom:12}}>
             <div className="sheet-label">Gamma Exposure · per strike</div>
             <span style={{fontFamily:"var(--mono)",fontSize:9,
-              color:"var(--text-mute)",letterSpacing:"0.08em"}}>
-              NET Γ · {sym}
-            </span>
+              color:"var(--text-mute)",letterSpacing:"0.08em"}}>NET Γ · {sym}</span>
           </div>
           {renderGamma()}
         </div>
-        {/* Sağ */}
         <div>
           <div style={{display:"flex",justifyContent:"space-between",
             alignItems:"baseline",marginBottom:12}}>
             <div className="sheet-label">Buy / Sell Volume · per strike</div>
             <span style={{fontFamily:"var(--mono)",fontSize:9,
-              color:"var(--text-mute)",letterSpacing:"0.08em"}}>
-              4 KATEGORİ · 24H
-            </span>
+              color:"var(--text-mute)",letterSpacing:"0.08em"}}>8 KATEGORİ · 24H</span>
           </div>
-          {renderFlow()}
+          {renderVolume()}
         </div>
       </div>
 
-      {/* Legend + toplamlar */}
-      {flowTotals && (
+      {/* Legend + 24h toplamlar */}
+      {totals24h && (
         <>
           <hr style={{margin:"8px 0 24px",border:"none",borderTop:"1px solid var(--hairline)"}}/>
           <div style={{display:"grid",gridTemplateColumns:"minmax(0,1.6fr) minmax(0,1fr)",gap:48}}>
-            {/* Legend */}
-            <div style={{display:"flex",gap:20,alignItems:"center",flexWrap:"wrap"}}>
+            <div style={{display:"flex",gap:16,alignItems:"center",flexWrap:"wrap"}}>
               {[
-                {c:"#5b8fc7",l:"Call Buy"},
-                {c:"#d4a05c",l:"Put Buy"},
-                {c:"#a8c5e0",l:"Call Sell"},
-                {c:"#e8c89c",l:"Put Sell"},
-              ].map(({c,l}) => (
-                <div key={l} style={{display:"flex",alignItems:"center",gap:6,
-                  fontFamily:"var(--mono)",fontSize:10,color:"var(--text-dim)"}}>
-                  <div style={{width:10,height:10,background:c}}/>
+                {c:"#5b8fc7",l:"Calls Buy"},
+                {c:"#d4a05c",l:"Puts Buy"},
+                {c:"#3a5878",l:"Calls Buy Block"},
+                {c:"#8a6b3a",l:"Puts Buy Block"},
+                {c:"#a8c5e0",l:"Calls Sell"},
+                {c:"#e8c89c",l:"Puts Sell"},
+                {c:"#6b8a9c",l:"Calls Sell Block"},
+                {c:"#a8956b",l:"Puts Sell Block"},
+              ].map(({c,l})=>(
+                <div key={l} style={{display:"flex",alignItems:"center",gap:5,
+                  fontFamily:"var(--mono)",fontSize:9,color:"var(--text-dim)"}}>
+                  <div style={{width:8,height:8,background:c,flexShrink:0}}/>
                   {l}
                 </div>
               ))}
-              <span style={{fontFamily:"var(--mono)",fontSize:9,color:"var(--text-mute)",
-                letterSpacing:"0.04em",marginLeft:8}}>
-                {instruments} aktif opsiyon · {sym}
-              </span>
             </div>
-            {/* 24h toplamlar */}
             <div>
               <div className="sheet-label" style={{marginBottom:14}}>24h Flow · Toplamlar</div>
               {[
-                {l:"Calls Buy",  v:flowTotals.callBuy,  c:"#5b8fc7"},
-                {l:"Calls Sell", v:flowTotals.callSell, c:"#a8c5e0"},
-                {l:"Puts Buy",   v:flowTotals.putBuy,   c:"#d4a05c"},
-                {l:"Puts Sell",  v:flowTotals.putSell,  c:"#e8c89c"},
-              ].map(({l,v,c}) => (
-                <div key={l} style={{display:"grid",
-                  gridTemplateColumns:"1fr auto auto",gap:12,
-                  padding:"10px 0",borderBottom:"1px solid var(--hairline-soft)",
+                {l:"Calls Buy",  v:totals24h.callsBuy,       c:"#5b8fc7"},
+                {l:"Calls Sell", v:totals24h.callsSell,      c:"#a8c5e0"},
+                {l:"Puts Buy",   v:totals24h.putsBuy,        c:"#d4a05c"},
+                {l:"Puts Sell",  v:totals24h.putsSell,       c:"#e8c89c"},
+                {l:"Call Blocks",v:totals24h.callBuyBlocked, c:"var(--accent)"},
+              ].map(({l,v,c})=>(
+                <div key={l} style={{display:"grid",gridTemplateColumns:"1fr auto auto",
+                  gap:12,padding:"8px 0",borderBottom:"1px solid var(--hairline-soft)",
                   fontFamily:"var(--mono)",fontSize:11,alignItems:"baseline"}}>
                   <span style={{color:"var(--text-dim)"}}>{l}</span>
                   <span style={{color:c,fontWeight:600}}>{fmtV(v)}</span>
