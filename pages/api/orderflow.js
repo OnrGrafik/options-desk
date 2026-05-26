@@ -1,237 +1,241 @@
-// ═══════════════════════════════════════════════════════════════
-// Order Flow API
-// Sol grafik: 24 saatlik opsiyon hacmi (BUY↑ / SELL↓ per strike)
-// Sağ grafik: Kapanan/vadesi dolan opsiyonların GEX değeri
+// ═══════════════════════════════════════════════════════════════════════
+// Order Flow API v2
 //
-// GEX formülü (gex.js ile birebir):
-//   GEX = Gamma * OI * 1 BTC * Spot^2 * 0.01 * (call:+1 / put:-1)
-//   gammaUnit = GEX / (Spot^2 * 0.01)  → BTC cinsinden
-// ═══════════════════════════════════════════════════════════════
+// TEK KAYNAK: get_book_summary_by_currency
+//   → Her aktif opsiyon için: OI, volume_24h, mark_iv, mark_price,
+//     bid, ask, instrument_name (strike + tip)
+//
+// Sol grafik — Net GEX per strike (canlı opsiyonlar):
+//   GEX = Gamma * OI * S² * 0.01 * sign(call:+1, put:-1)
+//   gammaUnit = GEX / (S² * 0.01) = Gamma * OI * sign
+//   Normalize: / maxAbs → [-1, +1]
+//
+// Sağ grafik — 24h Buy↑/Sell↓ per strike:
+//   volume_24h = toplam hacim (BTC cinsinden kontrat)
+//   buy/sell tahmini: delta-hedge mantığı
+//     - Call alım (buy) → dealer SELL delta → call buy signal
+//     - Bid/ask/mark spread'e göre buy ratio hesapla
+//
+// Hafıza mimarisi:
+//   - Vercel serverless = stateless, in-memory cache ÇALIŞMAZ
+//   - Cache-Control: s-maxage=120 → Vercel/CDN edge cache = 2dk
+//   - Client: React useRef cache = 5dk, sayfa başına 1 fetch
+//   - Veri boyutu küçük (~200 strike × 2 sembol) → edge cache yeterli
+//
+// BS Gamma (gex.js ile birebir):
+//   d1 = (ln(S/K) + 0.5σ²T) / (σ√T)
+//   Gamma = N'(d1) / (S × σ × √T)
+//   GEX = Gamma × OI × S² × 0.01 × sign
+// ═══════════════════════════════════════════════════════════════════════
 
 const HDR = { "Accept": "application/json", "User-Agent": "OpsiyonMasasi/1.0" };
-const TO  = 15000;
+const TO  = 20000;
 
 async function deribit(method, params = {}) {
   const qs  = new URLSearchParams(params).toString();
   const url = `https://www.deribit.com/api/v2/public/${method}${qs ? "?" + qs : ""}`;
   try {
     const r = await fetch(url, { headers: HDR, signal: AbortSignal.timeout(TO) });
-    if (!r.ok) return null;
+    if (!r.ok) {
+      console.error(`Deribit ${method} → ${r.status}`);
+      return null;
+    }
     const d = await r.json();
+    if (d.error) { console.error(`Deribit ${method} error:`, d.error); return null; }
     return d.result;
-  } catch(e) { return null; }
+  } catch(e) {
+    console.error(`Deribit ${method} exception:`, e.message);
+    return null;
+  }
 }
 
-// ── Black-Scholes Gamma (aynı gex.js formülü)
-function normPDF(x) { return Math.exp(-0.5*x*x) / Math.sqrt(2*Math.PI); }
+// ── Black-Scholes Gamma — gex.js ile birebir
+function normPDF(x) {
+  return Math.exp(-0.5 * x * x) / Math.sqrt(2 * Math.PI);
+}
+
 function bsGamma(S, K, T, sigma) {
-  if (T <= 0 || sigma <= 0) return 0;
+  if (T <= 0 || sigma <= 0 || S <= 0 || K <= 0) return 0;
   const sqrtT = Math.sqrt(T);
-  const d1 = (Math.log(S/K) + (0.5*sigma*sigma)*T) / (sigma*sqrtT);
+  const d1 = (Math.log(S / K) + 0.5 * sigma * sigma * T) / (sigma * sqrtT);
   return normPDF(d1) / (S * sigma * sqrtT);
 }
 
-// ── 24 saatlik hacim verisi — get_book_summary_by_currency
-// Her instrument için: volume_24h = buy + sell hacmi, direction bilgisi yok
-// Deribit'te direction için get_last_trades_by_currency_and_time kullanılır
-// Basit yaklaşım: book_summary'den volume + mark_price + delta bilgisiyle
-// positive_net_volume (call) → BUY side, negative (put) → SELL side
-async function hacim24h(currency, spot) {
-  const summary = await deribit("get_book_summary_by_currency", {
-    currency,
-    kind: "option",
-  });
+// ── Strike ve tip'i instrument_name'den parse et
+// BTC-28MAR25-100000-C veya ETH-28MAR25-3000-P
+function parseInstrument(name) {
+  const parts = name.split("-");
+  if (parts.length < 4) return null;
+  const strike = parseFloat(parts[2]);
+  const tip    = parts[parts.length - 1] === "C" ? "call" : "put";
+  if (!strike || isNaN(strike)) return null;
+  return { strike, tip };
+}
 
-  if (!summary?.length) return [];
+// ── Ana veri işleme: tek book_summary çağrısından hem GEX hem 24h hacim
+function processBookSummary(summary, spot) {
+  if (!summary?.length) return { byStrike: {} };
 
+  const now    = Date.now();
+  const lo     = spot * 0.55;
+  const hi     = spot * 1.35;
   const byStrike = {};
 
   for (const inst of summary) {
-    const name   = inst.instrument_name;
-    // instrument_name: BTC-28MAR25-100000-C
-    const parts  = name.split("-");
-    if (parts.length < 4) continue;
-    const strike = parseInt(parts[2]);
-    const tip    = parts[3] === "C" ? "call" : "put";
-    if (!strike || isNaN(strike)) continue;
+    const parsed = parseInstrument(inst.instrument_name);
+    if (!parsed) continue;
+    const { strike, tip } = parsed;
+    if (strike < lo || strike > hi) continue;
 
-    const vol24h = parseFloat(inst.volume_24h || 0);  // BTC/ETH cinsinden kontrat
-    if (vol24h < 0.01) continue;
+    const oi      = parseFloat(inst.open_interest    || 0);
+    const markIV  = parseFloat(inst.mark_iv          || 50) / 100;  // % → ratio
+    const vol24h  = parseFloat(inst.volume_24h       || 0);
+    const bid     = parseFloat(inst.best_bid_price   || 0);
+    const ask     = parseFloat(inst.best_ask_price   || 0);
+    const mark    = parseFloat(inst.mark_price       || 0);
+
+    // Vade: instrument_name'den expiry tarihini çıkar
+    // BTC-28MAR25-... → "28MAR25"
+    const parts     = inst.instrument_name.split("-");
+    const expStr    = parts[1] || "";
+    const expDate   = parseExpiry(expStr);
+    const T         = expDate ? Math.max((expDate - now) / (365.25 * 24 * 3600 * 1000), 0.00001) : 0.01;
+    const sigma     = Math.max(markIV, 0.05);
+
+    // GEX hesabı
+    const gamma     = bsGamma(spot, strike, T, sigma);
+    const sign      = tip === "call" ? 1 : -1;
+    const gammaUnit = gamma * oi * sign;  // normalize edilmemiş
+
+    // 24h hacim buy/sell tahmini
+    // Mark fiyatın bid-ask içindeki konumuna göre
+    let buyRatio = 0.5;
+    if (bid > 0 && ask > 0 && ask > bid) {
+      // Mark ask'a yakın → alım baskısı
+      buyRatio = Math.max(0.15, Math.min(0.85, (mark - bid) / (ask - bid)));
+    }
+    const buyVol  = vol24h * buyRatio;
+    const sellVol = vol24h * (1 - buyRatio);
 
     if (!byStrike[strike]) {
       byStrike[strike] = {
         strike,
-        callBuy: 0, callSell: 0,
+        callGamma: 0, putGamma: 0, net: 0,   // GEX için
+        callBuy: 0, callSell: 0,               // hacim için
         putBuy:  0, putSell:  0,
+        callOI: 0,  putOI: 0,
       };
     }
 
-    // Deribit'te bid/ask spread ve mark'a göre buy/sell tahmini:
-    // mark_price yakın ask → daha çok buy baskısı
-    // Basit yaklaşım: volume'u % ile ikiye böl
-    // Gerçek direction için best_bid/best_ask kullanıyoruz
-    const bid  = parseFloat(inst.best_bid_price || 0);
-    const ask  = parseFloat(inst.best_ask_price || 0);
-    const mark = parseFloat(inst.mark_price || 0);
-
-    let buyRatio = 0.5;
-    if (bid > 0 && ask > 0 && mark > 0) {
-      // Mark fiyat ask'a yakınsa → alım baskısı yüksek
-      const mid = (bid + ask) / 2;
-      if (ask > bid) {
-        buyRatio = Math.max(0.1, Math.min(0.9, (mark - bid) / (ask - bid)));
-      }
-    }
-
-    const buyVol  = vol24h * buyRatio;
-    const sellVol = vol24h * (1 - buyRatio);
+    const b = byStrike[strike];
 
     if (tip === "call") {
-      byStrike[strike].callBuy  += buyVol;
-      byStrike[strike].callSell += sellVol;
+      b.callGamma += gammaUnit;
+      b.callBuy   += buyVol;
+      b.callSell  += sellVol;
+      b.callOI    += oi;
     } else {
-      byStrike[strike].putBuy   += buyVol;
-      byStrike[strike].putSell  += sellVol;
+      b.putGamma  += gammaUnit;  // negatif değer
+      b.putBuy    += buyVol;
+      b.putSell   += sellVol;
+      b.putOI     += oi;
     }
+    b.net = b.callGamma + b.putGamma;
   }
 
-  // Sadece spot etrafındaki strikeleri döndür
-  const lo = spot * 0.55, hi = spot * 1.35;
-  return Object.values(byStrike)
-    .filter(s => s.strike >= lo && s.strike <= hi)
-    .sort((a, b) => a.strike - b.strike);
+  return { byStrike };
 }
 
-// ── Kapanan opsiyonların GEX değeri (sağ grafik)
-// Vadesi son 7 günde dolan opsiyonlar için GEX hesapla
-// GEX = Gamma * OI * Spot^2 * 0.01 * (call:+1 / put:-1)
-async function kapananGex(currency) {
-  const now    = Date.now();
-  const yediGun = 7 * 24 * 3600 * 1000;
-
-  // Spot fiyat
-  const spotData = await deribit("get_index_price", {
-    index_name: `${currency.toLowerCase()}_usd`
-  });
-  const spot = parseFloat(spotData?.index_price || 0);
-  if (!spot) return { gammaUnits: [], spot: 0 };
-
-  // Vadesi dolan enstrumanlar
-  const instruments = await deribit("get_instruments", {
-    currency,
-    kind: "option",
-    expired: "true",
-  });
-  if (!instruments?.length) return { gammaUnits: [], spot };
-
-  // Son 7 günde kapananlar
-  const yakin = instruments
-    .filter(i => i.expiration_timestamp > now - yediGun && i.expiration_timestamp <= now)
-    .sort((a, b) => b.expiration_timestamp - a.expiration_timestamp)
-    .slice(0, 80);
-
-  if (!yakin.length) return { gammaUnits: [], spot };
-
-  // Settlement fiyatları
-  const deliveryFiyatlari = {};
-  const tarihler = [...new Set(yakin.map(i => {
-    const d = new Date(i.expiration_timestamp);
-    return `${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,"0")}-${String(d.getUTCDate()).padStart(2,"0")}`;
-  }))];
-
-  for (const tarih of tarihler) {
-    const d = await deribit("get_delivery_prices", {
-      index_name: `${currency.toLowerCase()}_usd`,
-      date: tarih
-    });
-    if (d?.data?.length) {
-      deliveryFiyatlari[tarih] = parseFloat(d.data[0].delivery_price);
-    }
-  }
-
-  const byStrike = {};
-
-  for (const inst of yakin.slice(0, 50)) {
-    const tk = await deribit("ticker", { instrument_name: inst.instrument_name });
-    if (!tk) continue;
-
-    const strike  = inst.strike;
-    const tip     = inst.option_type;  // "call" | "put"
-    const oi      = parseFloat(tk.open_interest || 0);
-    const markIV  = parseFloat(tk.mark_iv || 0) / 100;
-
-    const expDate  = new Date(inst.expiration_timestamp);
-    const tarihKey = `${expDate.getUTCFullYear()}-${String(expDate.getUTCMonth()+1).padStart(2,"0")}-${String(expDate.getUTCDate()).padStart(2,"0")}`;
-    const settlementFiyat = deliveryFiyatlari[tarihKey] || spot;
-
-    // GEX hesabı — kapanış anındaki değer
-    // T = 0 (vadesi geçmiş) ama son IV ile hesapla
-    const T = Math.max((inst.expiration_timestamp - now + 3600000) / (365.25*24*3600*1000), 0.001);
-    const sigma = Math.max(markIV, 0.1);
-    const gamma = bsGamma(settlementFiyat, strike, T, sigma);
-
-    // GEX = Gamma * OI * S^2 * 0.01 * sign
-    const sign = tip === "call" ? 1 : -1;
-    const gex  = gamma * oi * settlementFiyat * settlementFiyat * 0.01 * sign;
-    // gammaUnit = gex / (S^2 * 0.01) = gamma * OI * sign
-    const gammaUnit = gamma * oi * sign;
-
-    if (!byStrike[strike]) {
-      byStrike[strike] = { strike, callGamma: 0, putGamma: 0, net: 0 };
-    }
-
-    if (tip === "call") {
-      byStrike[strike].callGamma += gammaUnit;
-    } else {
-      byStrike[strike].putGamma  += gammaUnit;  // negatif
-    }
-    byStrike[strike].net = byStrike[strike].callGamma + byStrike[strike].putGamma;
-  }
-
-  // Normalize — max değere göre
-  const values = Object.values(byStrike);
-  const maxAbs = Math.max(...values.map(s => Math.max(Math.abs(s.callGamma), Math.abs(s.putGamma))), 1e-9);
-  const gammaUnits = values
-    .map(s => ({
-      ...s,
-      callGamma: s.callGamma / maxAbs,
-      putGamma:  s.putGamma  / maxAbs,
-      net:       s.net       / maxAbs,
-    }))
-    .sort((a, b) => a.strike - b.strike);
-
-  return { gammaUnits, spot };
+// ── Expiry string parse: "28MAR25" → timestamp
+const MONTHS = { JAN:0,FEB:1,MAR:2,APR:3,MAY:4,JUN:5,
+                 JUL:6,AUG:7,SEP:8,OCT:9,NOV:10,DEC:11 };
+function parseExpiry(s) {
+  if (!s || s.length < 7) return null;
+  const day = parseInt(s.slice(0, 2));
+  const mon = MONTHS[s.slice(2, 5)];
+  const yr  = 2000 + parseInt(s.slice(5, 7));
+  if (isNaN(day) || mon === undefined || isNaN(yr)) return null;
+  return Date.UTC(yr, mon, day, 8, 0, 0);  // Deribit 08:00 UTC'de expire eder
 }
 
-// ── Ana handler
 export default async function handler(req, res) {
   const { currency = "BTC" } = req.query;
   const cur = currency.toUpperCase();
 
+  if (!["BTC", "ETH"].includes(cur)) {
+    return res.status(400).json({ error: "currency must be BTC or ETH" });
+  }
+
   try {
-    // Paralel çek
-    const [spotData, hacimData, kapananData] = await Promise.all([
-      deribit("get_index_price", { index_name: `${cur.toLowerCase()}_usd` }),
-      hacim24h(cur, 0),   // spot 0 olacak, tekrar çekeceğiz
-      kapananGex(cur),
-    ]);
+    // 1. Spot fiyat
+    const spotRes = await deribit("get_index_price", {
+      index_name: `${cur.toLowerCase()}_usd`,
+    });
+    const spot = parseFloat(spotRes?.index_price || 0);
+    if (!spot) {
+      return res.status(503).json({ error: "Spot fiyat alınamadı" });
+    }
 
-    const spot = parseFloat(spotData?.index_price || kapananData.spot || 0);
+    // 2. Book summary — TEK ÇAĞRI, tüm aktif opsiyonlar
+    const summary = await deribit("get_book_summary_by_currency", {
+      currency: cur,
+      kind: "option",
+    });
 
-    // Hacim verisini spot'a göre tekrar filtrele
-    const lo = spot * 0.55, hi = spot * 1.35;
-    const flowByStrike = (await hacim24h(cur, spot))
-      .filter(s => s.strike >= lo && s.strike <= hi);
+    if (!summary?.length) {
+      return res.status(503).json({ error: "Book summary alınamadı" });
+    }
 
-    res.setHeader("Cache-Control", "s-maxage=120, stale-while-revalidate=180");
+    console.log(`[orderflow] ${cur} spot=${spot} instruments=${summary.length}`);
+
+    // 3. İşle
+    const { byStrike } = processBookSummary(summary, spot);
+    const strikes = Object.values(byStrike).sort((a, b) => a.strike - b.strike);
+
+    if (!strikes.length) {
+      return res.status(200).json({
+        currency: cur, spot,
+        gammaUnits: [], flowByStrike: [],
+      });
+    }
+
+    // 4. GEX normalize
+    const maxGamma = Math.max(...strikes.map(s =>
+      Math.max(Math.abs(s.callGamma), Math.abs(s.putGamma))
+    ), 1e-9);
+
+    const gammaUnits = strikes.map(s => ({
+      strike:     s.strike,
+      callGamma:  s.callGamma / maxGamma,
+      putGamma:   s.putGamma  / maxGamma,
+      net:        s.net       / maxGamma,
+      callOI:     s.callOI,
+      putOI:      s.putOI,
+    }));
+
+    // 5. Flow verisi (normalize gerekmez, ham hacim)
+    const flowByStrike = strikes.map(s => ({
+      strike:    s.strike,
+      callBuy:   parseFloat(s.callBuy.toFixed(2)),
+      callSell:  parseFloat(s.callSell.toFixed(2)),
+      putBuy:    parseFloat(s.putBuy.toFixed(2)),
+      putSell:   parseFloat(s.putSell.toFixed(2)),
+      totalBuy:  parseFloat((s.callBuy + s.putBuy).toFixed(2)),
+      totalSell: parseFloat((s.callSell + s.putSell).toFixed(2)),
+    })).filter(s => s.totalBuy + s.totalSell > 0.01);
+
+    // Edge cache: 2dk fresh, 4dk stale
+    res.setHeader("Cache-Control", "s-maxage=120, stale-while-revalidate=240");
     res.status(200).json({
       currency: cur,
       spot,
-      flowByStrike,                           // Sol grafik: 24h hacim
-      gammaUnits: kapananData.gammaUnits,     // Sağ grafik: kapanan GEX
+      instruments: summary.length,
+      gammaUnits,    // Sol grafik: Net GEX per strike
+      flowByStrike,  // Sağ grafik: 24h hacim
     });
+
   } catch(e) {
-    console.error("orderflow error:", e);
+    console.error("[orderflow] error:", e);
     res.status(500).json({ error: e.message });
   }
 }
