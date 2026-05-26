@@ -226,6 +226,7 @@ function SbStat({label,value,pos}) {
 // KAPANAN OPSİYONLAR — Vade sonu + Büyük kapanışlar
 // ═══════════════════════════════════════════════════════════
 const KAPANAN_CACHE = { veri: null, ts: 0 };
+const MAKRO_CACHE   = { veri: null, yuklenmeZamani: 0 };
 
 function KapananOpsiyonlar({ sym }) {
   const [veri,    setVeri]    = useState(null);
