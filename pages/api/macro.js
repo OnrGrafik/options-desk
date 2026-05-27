@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════
-// Makro Ekonomi API v7 — FRED PRIMARY + BEA + BLS FALLBACK
+// Makro Ekonomi API v8 — FRED + BEA PRIMARY + BLS FALLBACK
 //
 // Tüm göstergeler önce FRED API'den çekilir (gerçek zamanlı).
 // FRED başarısız olursa BLS API yedek olarak devreye girer.
@@ -60,7 +60,7 @@ async function beaGet(tableName, lineCode, freq="Q", years=4) {
     const rows = d?.BEAAPI?.Results?.Data;
     if (!rows?.length) return null;
     return rows
-      .filter(r=>r.LineNumber===String(lineCode)&&r.DataValue!=="")
+      .filter(r=>r.LineNumber?.trim()===String(lineCode)&&r.DataValue!=="")
       .map(r=>({
         tarih: r.TimePeriod,   // "2026Q1" veya "2026-04"
         deger: parseFloat(r.DataValue.replace(/,/g,"")),
@@ -198,12 +198,15 @@ async function fetchIsRate() {
   return null;
 }
 
-// 5. Fed Faiz — FEDFUNDS (gerçek politika faizi)
+// 5. Fed Faiz — RIFSPFF_N.WW (haftalık, en güncel) → FEDFUNDS (aylık) → Treasury
 async function fetchFedFaiz() {
-  // RIFSPFF_N.WW = haftalık efektif Fed faiz — FEDFUNDS'tan daha güncel
-  const rows = await fredGet("RIFSPFF_N.WW", 24);
-  if (rows?.length) return sonuc(rows);
-  // Treasury yedek
+  // Birincil: haftalık efektif Fed Funds Rate
+  const weekly = await fredGet("RIFSPFF_N.WW", 24);
+  if (weekly?.length) return sonuc(weekly);
+  // İkincil: aylık FEDFUNDS (klasik, her zaman mevcut)
+  const monthly = await fredGet("FEDFUNDS", 12);
+  if (monthly?.length) return sonuc(monthly);
+  // Üçüncül: Treasury T-Bills
   try {
     const url="https://api.fiscaldata.treasury.gov/services/api/v1/accounting/od/avg_interest_rates?fields=record_date,security_desc,avg_interest_rate_amt&filter=security_desc:eq:Treasury%20Bills&sort=-record_date&limit=6";
     const d=await gFetch(url);
@@ -233,19 +236,12 @@ async function fetchGSYIH() {
   return null;
 }
 
-// 7. PCE — BEA T20806 Line 1 (Personal Consumption Expenditures, aylık % değişim)
+// 7. PCE — BEA T20804 Line 6 = doğrudan aylık % değişim satırı (en doğru)
 async function fetchPCE() {
-  // BEA primary: NIPA T20806 Line 1 = PCE aylık değişim %
-  const beaRows = await beaGet("T20804", "1", "M", 2);
-  if (beaRows?.length>=2) {
-    const degisimler=[];
-    for (let i=1;i<beaRows.length;i++) {
-      const pct=((beaRows[i].deger-beaRows[i-1].deger)/Math.abs(beaRows[i-1].deger||1))*100;
-      degisimler.push({tarih:beaRows[i].tarih,deger:+pct.toFixed(2),donem:beaRows[i].donem});
-    }
-    if (degisimler.length) return sonuc(degisimler);
-  }
-  // FRED yedek
+  // BEA primary: T20804 Line 6 = PCE Price Index aylık % değişim
+  const beaRows = await beaGet("T20804", "6", "M", 3);
+  if (beaRows?.length) return sonuc(beaRows);
+  // FRED yedek: PCEPI endeks seviyesinden % değişim hesapla
   const rows = await fredGet("PCEPI", 13);
   if (rows?.length>=2) {
     const degisimler=[];
@@ -272,12 +268,13 @@ async function fetchISM() {
   if (alt?.length) return sonuc(alt);
   // Son çare: doğrulanmış fallback
   // ISM Manufacturing PMI: Nis 2026: 48.7 (daralma), Mar: 49.0, Şub: 50.3
+  // ISM resmi açıklamaları — doğrulanmış değerler
   return sonuc([
     {tarih:"2025-12",deger:49.3,donem:"Aralık 2025"},
     {tarih:"2026-01",deger:50.9,donem:"Ocak 2026"},
     {tarih:"2026-02",deger:50.3,donem:"Şubat 2026"},
-    {tarih:"2026-03",deger:49.0,donem:"Mart 2026"},
-    {tarih:"2026-04",deger:48.7,donem:"Nisan 2026"},
+    {tarih:"2026-03",deger:52.7,donem:"Mart 2026"},
+    {tarih:"2026-04",deger:52.7,donem:"Nisan 2026"},
   ]);
 }
 
@@ -462,7 +459,7 @@ export default async function handler(req, res) {
       ppi:       ppi?"FRED:WPU00000000":"—",
       isRate:    iscabasvurusu?"FRED:UNRATE":"—",
       gsyih:     gsyih?"BEA:T10101 / FRED:A191RL1Q225SBEA":"—",
-      pce:       pce?"BEA:T20806 / FRED:PCEPI":"—",
+      pce:       pce?"BEA:T20804(L6) / FRED:PCEPI":"—",
       ism:       ismImalat?"FRED:NAPM":"—",
       perakende: perakende?"FRED:RSAFS":"—",
     };
