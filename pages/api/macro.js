@@ -20,6 +20,8 @@
 const HDR = { "Accept":"application/json","User-Agent":"MacroDeskBot/6.0" };
 const TO  = 12000;
 const FRED_KEY = process.env.FRED_API_KEY || "c34bca4ad481093e2519a1e0276bf5be";
+const BEA_KEY  = process.env.BEA_API_KEY  || "BE65C7F5-C752-4E41-9B07-044E0E383052";
+const BEA      = "https://apps.bea.gov/api/data";
 const FRED     = `https://api.stlouisfed.org/fred/series/observations`;
 
 async function gFetch(url) {
@@ -46,6 +48,25 @@ async function fredGet(seriesId, limit=24) {
         donem: new Date(o.date).toLocaleString("tr-TR",{month:"long",year:"numeric"}),
       }))
       .reverse(); // eskiden yeniye
+  } catch(e){ return null; }
+}
+
+// ── BEA API çekici
+async function beaGet(tableName, lineCode, freq="Q", years=4) {
+  try {
+    const yearList = Array.from({length:years},(_,i)=>new Date().getFullYear()-i).join(",");
+    const url = `${BEA}?UserID=${BEA_KEY}&method=GetData&DataSetName=NIPA&TableName=${tableName}&Frequency=${freq}&Year=${yearList}&ResultFormat=JSON`;
+    const d = await gFetch(url);
+    const rows = d?.BEAAPI?.Results?.Data;
+    if (!rows?.length) return null;
+    return rows
+      .filter(r=>r.LineNumber===String(lineCode)&&r.DataValue!=="")
+      .map(r=>({
+        tarih: r.TimePeriod,   // "2026Q1" veya "2026-04"
+        deger: parseFloat(r.DataValue.replace(/,/g,"")),
+        donem: r.TimePeriod,
+      }))
+      .sort((a,b)=>a.tarih.localeCompare(b.tarih));
   } catch(e){ return null; }
 }
 
@@ -200,28 +221,30 @@ async function fetchFedFaiz() {
   return null;
 }
 
-// 6. GSYİH — GDPC1 (çeyreklik, yıllık % büyüme)
+// 6. GSYİH — BEA T10101 Line 1 (Real GDP, çeyreklik % değişim yıllıklandırılmış)
 async function fetchGSYIH() {
-  const rows = await fredGet("A191RL1Q225SBEA", 8); // Real GDP büyüme %
+  // BEA primary: NIPA T10101 Line 1 = Real GDP büyüme % (yıllıklandırılmış)
+  const beaRows = await beaGet("T10101", "1", "Q", 3);
+  if (beaRows?.length) return sonuc(beaRows);
+  // FRED yedek
+  const rows = await fredGet("A191RL1Q225SBEA", 8);
   if (rows?.length) return sonuc(rows);
-  // World Bank yedek
-  try {
-    const url="https://api.worldbank.org/v2/country/US/indicator/NY.GDP.MKTP.KD.ZG?format=json&per_page=5&mrv=5";
-    const d=await gFetch(url);
-    const wrows=d?.[1];
-    if (Array.isArray(wrows)) {
-      const temiz=wrows
-        .filter(r=>r.value!=null)
-        .map(r=>({tarih:String(r.date),deger:+parseFloat(r.value).toFixed(1),donem:String(r.date)}))
-        .sort((a,b)=>a.tarih.localeCompare(b.tarih));
-      if (temiz.length) return sonuc(temiz);
-    }
-  } catch(e){}
   return null;
 }
 
-// 7. PCE — PCEPI (aylık % değişim — Fed'in takip ettiği enflasyon)
+// 7. PCE — BEA T20806 Line 1 (Personal Consumption Expenditures, aylık % değişim)
 async function fetchPCE() {
+  // BEA primary: NIPA T20806 Line 1 = PCE aylık değişim %
+  const beaRows = await beaGet("T20806", "1", "M", 2);
+  if (beaRows?.length>=2) {
+    const degisimler=[];
+    for (let i=1;i<beaRows.length;i++) {
+      const pct=((beaRows[i].deger-beaRows[i-1].deger)/Math.abs(beaRows[i-1].deger||1))*100;
+      degisimler.push({tarih:beaRows[i].tarih,deger:+pct.toFixed(2),donem:beaRows[i].donem});
+    }
+    if (degisimler.length) return sonuc(degisimler);
+  }
+  // FRED yedek
   const rows = await fredGet("PCEPI", 13);
   if (rows?.length>=2) {
     const degisimler=[];
@@ -416,15 +439,15 @@ export default async function handler(req, res) {
 
     // Hangi kaynaktan veri geldi — şeffaflık için
     const kaynaklar={
-      fedFaiz: fedFaiz?"FRED:FEDFUNDS":"—",
-      cpi:     cpi?"FRED:CPIAUCSL":"—",
-      nfp:     nfp?"FRED:PAYEMS":"—",
-      ppi:     ppi?"FRED:PPIACO":"—",
-      isRate:  iscabasvurusu?"FRED:UNRATE":"—",
-      gsyih:   gsyih?"FRED:A191RL1Q225SBEA":"—",
-      pce:     pce?"FRED:PCEPI":"—",
-      ism:     ismImalat?"FRED:NAPM":"—",
-      perakende:perakende?"FRED:RSAFS":"—",
+      fedFaiz:   fedFaiz?"FRED:FEDFUNDS":"—",
+      cpi:       cpi?"FRED:CPIAUCSL":"—",
+      nfp:       nfp?"FRED:PAYEMS":"—",
+      ppi:       ppi?"FRED:PPIACO":"—",
+      isRate:    iscabasvurusu?"FRED:UNRATE":"—",
+      gsyih:     gsyih?"BEA:T10101 / FRED:A191RL1Q225SBEA":"—",
+      pce:       pce?"BEA:T20806 / FRED:PCEPI":"—",
+      ism:       ismImalat?"FRED:NAPM":"—",
+      perakende: perakende?"FRED:RSAFS":"—",
     };
 
     res.setHeader("Cache-Control","s-maxage=300,stale-while-revalidate=600");
