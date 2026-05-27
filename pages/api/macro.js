@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════
-// Makro Ekonomi API v8 — FRED + BEA PRIMARY + BLS FALLBACK
+// Makro Ekonomi API v9 — DOĞRU SERİLER: PPIFIS, PCEPI YoY, BLS CPI primary
 //
 // Tüm göstergeler önce FRED API'den çekilir (gerçek zamanlı).
 // FRED başarısız olursa BLS API yedek olarak devreye girer.
@@ -77,7 +77,12 @@ async function blsGet(seriesId, yil=1) {
     const r=await fetch("https://api.bls.gov/publicAPI/v2/timeseries/data/",{
       method:"POST",
       headers:{...HDR,"Content-Type":"application/json"},
-      body:JSON.stringify({seriesid:[seriesId],startyear:String(now-yil),endyear:String(now)}),
+      body:JSON.stringify({
+        seriesid:[seriesId],
+        startyear:String(now-yil),
+        endyear:String(now),
+        ...(process.env.BLS_API_KEY ? {registrationkey:process.env.BLS_API_KEY} : {}),
+      }),
       signal:AbortSignal.timeout(TO),
     });
     if (!r.ok) return null;
@@ -125,13 +130,14 @@ function sonuc(rows) {
 // GÖSTERGELERİ ÇEK — FRED öncelikli, BLS yedek
 // ═══════════════════════════════════════════════════════════
 
-// 1. CPI — CPIAUCSL (endeks, SA)
+// 1. CPI — BLS direkt (en güncel, yayın gününde yansır) → FRED yedek
 async function fetchCPI() {
-  const rows = await fredGet("CPIAUCSL", 12);
-  if (rows?.length) return sonuc(rows);
-  // BLS yedek
+  // BLS primary — CUUR0000SA0 = CPI-U Not Seasonally Adjusted (asıl yayın değeri)
   const bls = await blsGet("CUUR0000SA0", 1);
   if (bls?.length) return sonuc(bls);
+  // FRED yedek
+  const rows = await fredGet("CPIAUCSL", 12);
+  if (rows?.length) return sonuc(rows);
   return null;
 }
 
@@ -168,7 +174,7 @@ async function fetchNFP() {
 // 3. PPI — WPU00000000 endeks, YILLIK % değişim hesaplanır (12 ay geri)
 async function fetchPPI() {
   // YILLIK değişim için 14 ay çekiyoruz
-  const rows = await fredGet("WPU00000000", 14);
+  const rows = await fredGet("PPIFIS", 14);
   if (rows?.length >= 13) {
     const degisimler = [];
     // i-12 ile karşılaştır (yıllık)
@@ -179,7 +185,7 @@ async function fetchPPI() {
     if (degisimler.length) return sonuc(degisimler);
   }
   // BLS yedek — aynı yıllık mantık
-  const bls = await blsGet("WPU00000000", 2);  // 2 yıllık veri
+  const bls = await blsGet("WPSFD4", 2);  // 2 yıllık veri
   if (bls?.length >= 13) {
     const degisimler = [];
     for (let i = 12; i < bls.length; i++) {
@@ -238,21 +244,21 @@ async function fetchGSYIH() {
   return null;
 }
 
-// 7. PCE — BEA T20804 Line 6 = doğrudan aylık % değişim satırı (en doğru)
+// 7. PCE — YILLIK % değişim (Fed'in 2% hedefiyle karşılaştırılan değer)
 async function fetchPCE() {
-  // BEA primary: T20804 Line 6 = PCE Price Index aylık % değişim
-  const beaRows = await beaGet("T20804", "6", "M", 3);
-  if (beaRows?.length) return sonuc(beaRows);
-  // FRED yedek: PCEPI endeks seviyesinden % değişim hesapla
-  const rows = await fredGet("PCEPI", 13);
-  if (rows?.length>=2) {
-    const degisimler=[];
-    for (let i=1;i<rows.length;i++) {
-      const pct=((rows[i].deger-rows[i-1].deger)/rows[i-1].deger)*100;
-      degisimler.push({tarih:rows[i].tarih,deger:+pct.toFixed(2),donem:rows[i].donem});
+  // FRED PCEPI endeksinden YILLIK % değişim hesapla (Fed hedefi %2)
+  const rows = await fredGet("PCEPI", 14);
+  if (rows?.length >= 13) {
+    const degisimler = [];
+    for (let i = 12; i < rows.length; i++) {
+      const pct = ((rows[i].deger - rows[i-12].deger) / rows[i-12].deger) * 100;
+      degisimler.push({tarih:rows[i].tarih, deger:+pct.toFixed(2), donem:rows[i].donem});
     }
     if (degisimler.length) return sonuc(degisimler);
   }
+  // BEA yedek: T20804 Line 6 = aylık % değişim
+  const beaRows = await beaGet("T20804", "6", "M", 3);
+  if (beaRows?.length) return sonuc(beaRows);
   return null;
 }
 
@@ -452,12 +458,12 @@ export default async function handler(req, res) {
     // Hangi kaynaktan veri geldi — şeffaflık için
     const kaynaklar={
       fedFaiz:   fedFaiz?"FRED:RIFSPFF_N.WW":"—",
-      cpi:       cpi?"FRED:CPIAUCSL":"—",
+      cpi:       cpi?"BLS:CUUR0000SA0 / FRED:CPIAUCSL":"—",
       nfp:       nfp?"FRED:PAYEMS":"—",
-      ppi:       ppi?"FRED:WPU00000000":"—",
+      ppi:       ppi?"FRED:PPIFIS (Final Demand)":"—",
       isRate:    iscabasvurusu?"FRED:UNRATE":"—",
       gsyih:     gsyih?"BEA:T10101 / FRED:A191RL1Q225SBEA":"—",
-      pce:       pce?"BEA:T20804(L6) / FRED:PCEPI":"—",
+      pce:       pce?"FRED:PCEPI (YoY%) / BEA:T20804":"—",
       ism:       ismImalat?"FRED:NAPM":"—",
       perakende: perakende?"FRED:RSAFS":"—",
     };
