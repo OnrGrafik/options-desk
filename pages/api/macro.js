@@ -165,24 +165,26 @@ async function fetchNFP() {
   return null;
 }
 
-// 3. PPI — PPIACO (aylık % değişim)
+// 3. PPI — WPU00000000 endeks, YILLIK % değişim hesaplanır (12 ay geri)
 async function fetchPPI() {
-  const rows = await fredGet("WPU00000000", 13);
-  if (rows?.length>=2) {
-    const degisimler=[];
-    for (let i=1;i<rows.length;i++) {
-      const pct=((rows[i].deger-rows[i-1].deger)/rows[i-1].deger)*100;
-      degisimler.push({tarih:rows[i].tarih,deger:+pct.toFixed(2),donem:rows[i].donem});
+  // YILLIK değişim için 14 ay çekiyoruz
+  const rows = await fredGet("WPU00000000", 14);
+  if (rows?.length >= 13) {
+    const degisimler = [];
+    // i-12 ile karşılaştır (yıllık)
+    for (let i = 12; i < rows.length; i++) {
+      const pct = ((rows[i].deger - rows[i-12].deger) / rows[i-12].deger) * 100;
+      degisimler.push({tarih:rows[i].tarih, deger:+pct.toFixed(2), donem:rows[i].donem});
     }
     if (degisimler.length) return sonuc(degisimler);
   }
-  // BLS yedek
-  const bls = await blsGet("WPU00000000", 1);
-  if (bls?.length>=2) {
-    const degisimler=[];
-    for (let i=1;i<bls.length;i++) {
-      const pct=((bls[i].deger-bls[i-1].deger)/bls[i-1].deger)*100;
-      degisimler.push({tarih:bls[i].tarih,deger:+pct.toFixed(2),donem:bls[i].donem});
+  // BLS yedek — aynı yıllık mantık
+  const bls = await blsGet("WPU00000000", 2);  // 2 yıllık veri
+  if (bls?.length >= 13) {
+    const degisimler = [];
+    for (let i = 12; i < bls.length; i++) {
+      const pct = ((bls[i].deger - bls[i-12].deger) / bls[i-12].deger) * 100;
+      degisimler.push({tarih:bls[i].tarih, deger:+pct.toFixed(2), donem:bls[i].donem});
     }
     if (degisimler.length) return sonuc(degisimler);
   }
@@ -254,19 +256,15 @@ async function fetchPCE() {
   return null;
 }
 
-// 8. ISM PMI — NAPM (FRED'de 1 ay gecikmeli yayınlanır — ISM telif)
-// Alternatif: FRED MANEMP değil, doğrudan NAPM veya USPHCI
+// 8. ISM PMI — NAPM (FRED'de durduruldu) → fallback
+// USPHCI YANLIŞ — o Chicago Fed Persistent Indicator (130+ değerli), PMI DEĞİL!
 async function fetchISM() {
-  // Önce NAPM dene
+  // NAPM dene — FRED'de 2001'de durdurulmuş olsa da deniyoruz
   const rows = await fredGet("NAPM", 12);
-  if (rows?.length) {
-    // FRED'den gelen son veri 1 ay geriden gelebilir — kabul edilebilir
+  if (rows?.length && rows.every(r => r.deger >= 0 && r.deger <= 100)) {
     return sonuc(rows);
   }
-  // NAPM başarısız olursa USPHCI (Chicago PMI — ISM ile yüksek korelasyon)
-  const alt = await fredGet("USPHCI", 12);
-  if (alt?.length) return sonuc(alt);
-  // Son çare: doğrulanmış fallback
+  // Doğrulanmış fallback (USPHCI KESİNLİKLE kullanma — yanlış seri)
   // ISM Manufacturing PMI: Nis 2026: 48.7 (daralma), Mar: 49.0, Şub: 50.3
   // ISM resmi açıklamaları — doğrulanmış değerler
   return sonuc([
