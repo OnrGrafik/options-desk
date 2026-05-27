@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════
-// Makro Ekonomi API v6 — FRED PRIMARY + BLS FALLBACK
+// Makro Ekonomi API v7 — FRED PRIMARY + BEA + BLS FALLBACK
 //
 // Tüm göstergeler önce FRED API'den çekilir (gerçek zamanlı).
 // FRED başarısız olursa BLS API yedek olarak devreye girer.
@@ -8,11 +8,11 @@
 // FRED Serileri:
 //   CPI        : CPIAUCSL  (All Urban, SA, aylık)
 //   NFP        : PAYEMS    (Nonfarm Payroll, aylık değişim)
-//   PPI        : PPIACO    (All Commodities, aylık % değişim)
+//   PPI        : WPU00000000 (Finished Goods, aylık % değişim)
 //   İşsizlik   : UNRATE    (Unemployment Rate %)
-//   Fed Faiz   : FEDFUNDS  (Effective Federal Funds Rate)
+//   Fed Faiz   : RIFSPFF_N.WW (Effective Fed Funds, haftalık — en güncel)
 //   GSYİH      : GDPC1     (Real GDP, çeyreklik büyüme %)
-//   PCE        : PCEPI     (PCE Price Index, aylık % değişim)
+//   PCE        : BEA T20804 (PCE Price Index, aylık % değişim)
 //   ISM PMI    : NAPM      (ISM Manufacturing PMI)
 //   Perakende  : RSAFS     (Retail Sales, milyar $)
 // ═══════════════════════════════════════════════════════════
@@ -167,7 +167,7 @@ async function fetchNFP() {
 
 // 3. PPI — PPIACO (aylık % değişim)
 async function fetchPPI() {
-  const rows = await fredGet("PPIACO", 13);
+  const rows = await fredGet("WPU00000000", 13);
   if (rows?.length>=2) {
     const degisimler=[];
     for (let i=1;i<rows.length;i++) {
@@ -177,7 +177,7 @@ async function fetchPPI() {
     if (degisimler.length) return sonuc(degisimler);
   }
   // BLS yedek
-  const bls = await blsGet("WPSFD49502", 1);
+  const bls = await blsGet("WPU00000000", 1);
   if (bls?.length>=2) {
     const degisimler=[];
     for (let i=1;i<bls.length;i++) {
@@ -200,7 +200,8 @@ async function fetchIsRate() {
 
 // 5. Fed Faiz — FEDFUNDS (gerçek politika faizi)
 async function fetchFedFaiz() {
-  const rows = await fredGet("FEDFUNDS", 12);
+  // RIFSPFF_N.WW = haftalık efektif Fed faiz — FEDFUNDS'tan daha güncel
+  const rows = await fredGet("RIFSPFF_N.WW", 24);
   if (rows?.length) return sonuc(rows);
   // Treasury yedek
   try {
@@ -235,7 +236,7 @@ async function fetchGSYIH() {
 // 7. PCE — BEA T20806 Line 1 (Personal Consumption Expenditures, aylık % değişim)
 async function fetchPCE() {
   // BEA primary: NIPA T20806 Line 1 = PCE aylık değişim %
-  const beaRows = await beaGet("T20806", "1", "M", 2);
+  const beaRows = await beaGet("T20804", "1", "M", 2);
   if (beaRows?.length>=2) {
     const degisimler=[];
     for (let i=1;i<beaRows.length;i++) {
@@ -455,10 +456,10 @@ export default async function handler(req, res) {
 
     // Hangi kaynaktan veri geldi — şeffaflık için
     const kaynaklar={
-      fedFaiz:   fedFaiz?"FRED:FEDFUNDS":"—",
+      fedFaiz:   fedFaiz?"FRED:RIFSPFF_N.WW":"—",
       cpi:       cpi?"FRED:CPIAUCSL":"—",
       nfp:       nfp?"FRED:PAYEMS":"—",
-      ppi:       ppi?"FRED:PPIACO":"—",
+      ppi:       ppi?"FRED:WPU00000000":"—",
       isRate:    iscabasvurusu?"FRED:UNRATE":"—",
       gsyih:     gsyih?"BEA:T10101 / FRED:A191RL1Q225SBEA":"—",
       pce:       pce?"BEA:T20806 / FRED:PCEPI":"—",
