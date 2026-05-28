@@ -140,7 +140,7 @@ async function fetchCPI() {
     return +(((son-onceki)/onceki)*100).toFixed(2);
   };
   // BLS primary
-  const bls = await blsGet("CUUR0000SA0", 1);
+  const bls = await blsGet("CUSR0000SA0", 1);
   if (bls?.length>=2) return sonuc(bls, {degisim: aylikPct(bls)});
   // FRED yedek
   const rows = await fredGet("CPIAUCSL", 12);
@@ -471,7 +471,7 @@ export default async function handler(req, res) {
     // Hangi kaynaktan veri geldi — şeffaflık için
     const kaynaklar={
       fedFaiz:   fedFaiz?"FRED:RIFSPFF_N.WW":"—",
-      cpi:       cpi?"BLS:CUUR0000SA0 / FRED:CPIAUCSL":"—",
+      cpi:       cpi?"BLS:CUSR0000SA0 (SA) / FRED:CPIAUCSL":"—",
       nfp:       nfp?"FRED:PAYEMS":"—",
       ppi:       ppi?"FRED:PPIFIS (Final Demand)":"—",
       isRate:    iscabasvurusu?"FRED:UNRATE":"—",
