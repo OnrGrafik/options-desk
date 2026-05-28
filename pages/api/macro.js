@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════
-// Makro Ekonomi API v13 — BLS primary (yayın günü güncel) + FRED yedek
+// Makro Ekonomi API v14 — BLS primary CPI, BEA primary PCE, FRED yedek
 //
 // Tüm göstergeler önce FRED API'den çekilir (gerçek zamanlı).
 // FRED başarısız olursa BLS API yedek olarak devreye girer.
@@ -54,7 +54,10 @@ async function fredGet(seriesId, limit=24) {
 // ── BEA API çekici
 async function beaGet(tableName, lineCode, freq="Q", years=4) {
   try {
-    const yearList = Array.from({length:years},(_,i)=>new Date().getFullYear()-i).join(",");
+    const now2 = new Date().getFullYear();
+    // Her zaman en güncel yılı dahil et
+    const yearList = Array.from({length:years},(_,i)=>now2-i)
+      .filter((v,i,a)=>a.indexOf(v)===i).join(",");
     const url = `${BEA}?UserID=${BEA_KEY}&method=GetData&DataSetName=NIPA&TableName=${tableName}&Frequency=${freq}&Year=${yearList}&ResultFormat=JSON`;
     const d = await gFetch(url);
     const rows = d?.BEAAPI?.Results?.Data;
@@ -155,30 +158,31 @@ function sonuc(rows, ekstra={}) {
 // 1. CPI — BLS primary (yayın günü güncel) + FRED yedek
 // CUSR0000SA0 = CPI-U Seasonally Adjusted — Fed/medya resmi değer
 async function fetchCPI() {
-  // BLS primary — key varsa aylık/yıllık % otomatik gelir
+  // BLS primary — key varsa calculations ile resmi % değerleri gelir
   const bls = await blsGet("CUSR0000SA0", 2, true);
-  if (bls?.length >= 13) {
-    const son = bls[bls.length-1];
-    // BLS_KEY varsa calculations dolu, yoksa elle hesapla
-    const aylik = son.aylikPct != null ? son.aylikPct : (() => {
-      const onceki = bls[bls.length-2].deger;
-      return +(((son.deger-onceki)/onceki)*100).toFixed(2);
-    })();
-    const yillik = son.yillikPct != null ? son.yillikPct : (() => {
-      const yilOnce = bls[bls.length-13].deger;
-      return +(((son.deger-yilOnce)/yilOnce)*100).toFixed(2);
-    })();
+  if (bls?.length >= 2) {
+    const son    = bls[bls.length-1];
+    const onceki = bls[bls.length-2];
+    // BLS key + calculations → resmi BLS % değeri (0.60 gibi)
+    const aylik  = son.aylikPct  != null ? son.aylikPct
+                 : +(((son.deger-onceki.deger)/onceki.deger)*100).toFixed(2);
+    const yillik = son.yillikPct != null ? son.yillikPct
+                 : bls.length >= 13
+                   ? +(((son.deger-bls[bls.length-13].deger)/bls[bls.length-13].deger)*100).toFixed(2)
+                   : null;
     return sonuc(bls, {degisim: aylik, yillik});
   }
   // FRED yedek
   const rows = await fredGet("CPIAUCSL", 14);
-  if (rows?.length >= 13) {
-    const son = rows[rows.length-1].deger;
+  if (rows?.length >= 2) {
+    const son    = rows[rows.length-1].deger;
     const onceki = rows[rows.length-2].deger;
-    const yilOnce = rows[rows.length-13].deger;
+    const yillik = rows.length >= 13
+      ? +(((son-rows[rows.length-13].deger)/rows[rows.length-13].deger)*100).toFixed(2)
+      : null;
     return sonuc(rows, {
       degisim: +(((son-onceki)/onceki)*100).toFixed(2),
-      yillik:  +(((son-yilOnce)/yilOnce)*100).toFixed(2),
+      yillik,
     });
   }
   return null;
@@ -294,8 +298,16 @@ async function fetchGSYIH() {
   return null;
 }
 
-// 7. PCE — PCEPI endeks → guncel=yıllık %, degisim=aylık %
+// 7. PCE — BEA T20804 primary + FRED PCEPI yedek
+// BEA T20804 Line 6 = PCE Price Index % değişim (resmi BEA değeri)
 async function fetchPCE() {
+  // BEA primary — en güncel ay verisini çeker
+  const beaRows = await beaGet("T20804", "6", "M", 2);
+  if (beaRows?.length >= 2) {
+    // BEA aylık % değişim satırı direkt geliyor
+    return sonuc(beaRows);
+  }
+  // FRED yedek: PCEPI endeksinden yıllık % hesapla
   const rows = await fredGet("PCEPI", 14);
   if (rows?.length >= 13) {
     const yillikSerisi = [];
@@ -304,15 +316,12 @@ async function fetchPCE() {
       yillikSerisi.push({tarih:rows[i].tarih, deger:+pct.toFixed(2), donem:rows[i].donem});
     }
     if (yillikSerisi.length) {
-      const sonHam = rows[rows.length-1].deger;
+      const sonHam    = rows[rows.length-1].deger;
       const oncekiHam = rows[rows.length-2].deger;
-      const aylikPct = +(((sonHam-oncekiHam)/oncekiHam)*100).toFixed(2);
-      return sonuc(yillikSerisi, {degisim: aylikPct});
+      const aylik     = +(((sonHam-oncekiHam)/oncekiHam)*100).toFixed(2);
+      return sonuc(yillikSerisi, {degisim: aylik});
     }
   }
-  // BEA yedek
-  const beaRows = await beaGet("T20804", "6", "M", 3);
-  if (beaRows?.length) return sonuc(beaRows);
   return null;
 }
 
