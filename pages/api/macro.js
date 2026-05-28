@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════
-// Makro Ekonomi API v10 — guncel=yıllık%, degisim=aylık% (CPI/PPI/PCE)
+// Makro Ekonomi API v11 — BLS calculations alanı (resmi % değerleri)
 //
 // Tüm göstergeler önce FRED API'den çekilir (gerçek zamanlı).
 // FRED başarısız olursa BLS API yedek olarak devreye girer.
@@ -70,19 +70,21 @@ async function beaGet(tableName, lineCode, freq="Q", years=4) {
   } catch(e){ return null; }
 }
 
-// ── BLS API — yedek
-async function blsGet(seriesId, yil=1) {
+// ── BLS API — calculations alanı da çekilir (1M%, 12M% otomatik)
+async function blsGet(seriesId, yil=1, calculations=false) {
   try {
     const now=new Date().getFullYear();
+    const body = {
+      seriesid:[seriesId],
+      startyear:String(now-yil),
+      endyear:String(now),
+      ...(calculations ? {calculations:true} : {}),
+      ...(process.env.BLS_API_KEY ? {registrationkey:process.env.BLS_API_KEY} : {}),
+    };
     const r=await fetch("https://api.bls.gov/publicAPI/v2/timeseries/data/",{
       method:"POST",
       headers:{...HDR,"Content-Type":"application/json"},
-      body:JSON.stringify({
-        seriesid:[seriesId],
-        startyear:String(now-yil),
-        endyear:String(now),
-        ...(process.env.BLS_API_KEY ? {registrationkey:process.env.BLS_API_KEY} : {}),
-      }),
+      body:JSON.stringify(body),
       signal:AbortSignal.timeout(TO),
     });
     if (!r.ok) return null;
@@ -95,6 +97,11 @@ async function blsGet(seriesId, yil=1) {
         tarih:`${x.year}-${(x.period||"M00").replace("M","").padStart(2,"0")}`,
         deger:parseFloat(x.value),
         donem:`${x.periodName||""} ${x.year}`.trim(),
+        // BLS calculations.pct_changes.1 = aylık %, .12 = yıllık %
+        aylikPct: x.calculations?.pct_changes?.["1"] !== undefined
+                    ? parseFloat(x.calculations.pct_changes["1"]) : null,
+        yillikPct: x.calculations?.pct_changes?.["12"] !== undefined
+                    ? parseFloat(x.calculations.pct_changes["12"]) : null,
       }))
       .sort((a,b)=>a.tarih.localeCompare(b.tarih));
   } catch(e){return null;}
@@ -131,20 +138,29 @@ function sonuc(rows, ekstra={}) {
 // GÖSTERGELERİ ÇEK — FRED öncelikli, BLS yedek
 // ═══════════════════════════════════════════════════════════
 
-// 1. CPI — BLS direkt (en güncel) → FRED yedek
-// Frontend için: guncel=endeks, degisim=aylık % değişim
+// 1. CPI — BLS calculations alanından doğrudan SA aylık % değişim
 async function fetchCPI() {
-  const aylikPct = (arr) => {
-    if (!arr || arr.length < 2) return null;
-    const son = arr[arr.length-1].deger, onceki = arr[arr.length-2].deger;
-    return +(((son-onceki)/onceki)*100).toFixed(2);
-  };
-  // BLS primary
-  const bls = await blsGet("CUSR0000SA0", 1);
-  if (bls?.length>=2) return sonuc(bls, {degisim: aylikPct(bls)});
-  // FRED yedek
-  const rows = await fredGet("CPIAUCSL", 12);
-  if (rows?.length>=2) return sonuc(rows, {degisim: aylikPct(rows)});
+  // BLS primary: SA seri + calculations (BLS'in kendi hesabı)
+  // CUSR0000SA0 = CPI-U Seasonally Adjusted — Fed/medya bu değeri açıklar
+  const bls = await blsGet("CUSR0000SA0", 1, true);
+  if (bls?.length >= 2) {
+    const son = bls[bls.length-1];
+    return sonuc(bls, {
+      degisim: son.aylikPct,           // BLS'in resmi aylık %
+      yillik:  son.yillikPct,          // BLS'in resmi yıllık %
+    });
+  }
+  // FRED yedek: CPIAUCSL endeks, aylık % elle hesaplanır
+  const rows = await fredGet("CPIAUCSL", 13);
+  if (rows?.length >= 2) {
+    const son = rows[rows.length-1].deger;
+    const onceki = rows[rows.length-2].deger;
+    const aylik = +(((son-onceki)/onceki)*100).toFixed(2);
+    const yillik = rows.length>=13
+      ? +(((son-rows[rows.length-13].deger)/rows[rows.length-13].deger)*100).toFixed(2)
+      : null;
+    return sonuc(rows, {degisim: aylik, yillik});
+  }
   return null;
 }
 
