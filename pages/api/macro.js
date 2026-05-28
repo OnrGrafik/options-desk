@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════
-// Makro Ekonomi API v9 — DOĞRU SERİLER: PPIFIS, PCEPI YoY, BLS CPI primary
+// Makro Ekonomi API v10 — guncel=yıllık%, degisim=aylık% (CPI/PPI/PCE)
 //
 // Tüm göstergeler önce FRED API'den çekilir (gerçek zamanlı).
 // FRED başarısız olursa BLS API yedek olarak devreye girer.
@@ -111,18 +111,19 @@ function hesaplaTrend(arr) {
   return egim>0?"yukari":"asagi";
 }
 
-function sonuc(rows) {
+function sonuc(rows, ekstra={}) {
   if (!rows?.length) return null;
   const s=rows.slice(-6);
   const enSon=s[s.length-1], oBase=s.length>=2?s[s.length-2]:null;
   return {
-    guncel: enSon.deger,
-    tarih:  enSon.tarih,
-    donem:  enSon.donem||enSon.tarih,
-    onceki: oBase?.deger??null,
-    degisim:oBase?+(enSon.deger-oBase.deger).toFixed(3):null,
-    gecmis: s,
-    trend:  hesaplaTrend(s.map(d=>d.deger)),
+    guncel:  enSon.deger,
+    tarih:   enSon.tarih,
+    donem:   enSon.donem||enSon.tarih,
+    onceki:  oBase?.deger??null,
+    degisim: oBase?+(enSon.deger-oBase.deger).toFixed(3):null,
+    gecmis:  s,
+    trend:   hesaplaTrend(s.map(d=>d.deger)),
+    ...ekstra,
   };
 }
 
@@ -130,14 +131,20 @@ function sonuc(rows) {
 // GÖSTERGELERİ ÇEK — FRED öncelikli, BLS yedek
 // ═══════════════════════════════════════════════════════════
 
-// 1. CPI — BLS direkt (en güncel, yayın gününde yansır) → FRED yedek
+// 1. CPI — BLS direkt (en güncel) → FRED yedek
+// Frontend için: guncel=endeks, degisim=aylık % değişim
 async function fetchCPI() {
-  // BLS primary — CUUR0000SA0 = CPI-U Not Seasonally Adjusted (asıl yayın değeri)
+  const aylikPct = (arr) => {
+    if (!arr || arr.length < 2) return null;
+    const son = arr[arr.length-1].deger, onceki = arr[arr.length-2].deger;
+    return +(((son-onceki)/onceki)*100).toFixed(2);
+  };
+  // BLS primary
   const bls = await blsGet("CUUR0000SA0", 1);
-  if (bls?.length) return sonuc(bls);
+  if (bls?.length>=2) return sonuc(bls, {degisim: aylikPct(bls)});
   // FRED yedek
   const rows = await fredGet("CPIAUCSL", 12);
-  if (rows?.length) return sonuc(rows);
+  if (rows?.length>=2) return sonuc(rows, {degisim: aylikPct(rows)});
   return null;
 }
 
@@ -171,29 +178,31 @@ async function fetchNFP() {
   return null;
 }
 
-// 3. PPI — WPU00000000 endeks, YILLIK % değişim hesaplanır (12 ay geri)
+// 3. PPI — PPIFIS endeks → guncel=yıllık %, degisim=aylık %
 async function fetchPPI() {
-  // YILLIK değişim için 14 ay çekiyoruz
-  const rows = await fredGet("PPIFIS", 14);
-  if (rows?.length >= 13) {
-    const degisimler = [];
-    // i-12 ile karşılaştır (yıllık)
+  // Hem yıllık % serisi hem de en son aylık % değişim hesaplanır
+  const hesapla = (rows) => {
+    if (!rows || rows.length < 13) return null;
+    const yillikSerisi = [];
     for (let i = 12; i < rows.length; i++) {
       const pct = ((rows[i].deger - rows[i-12].deger) / rows[i-12].deger) * 100;
-      degisimler.push({tarih:rows[i].tarih, deger:+pct.toFixed(2), donem:rows[i].donem});
+      yillikSerisi.push({tarih:rows[i].tarih, deger:+pct.toFixed(2), donem:rows[i].donem});
     }
-    if (degisimler.length) return sonuc(degisimler);
-  }
-  // BLS yedek — aynı yıllık mantık
-  const bls = await blsGet("WPSFD4", 2);  // 2 yıllık veri
-  if (bls?.length >= 13) {
-    const degisimler = [];
-    for (let i = 12; i < bls.length; i++) {
-      const pct = ((bls[i].deger - bls[i-12].deger) / bls[i-12].deger) * 100;
-      degisimler.push({tarih:bls[i].tarih, deger:+pct.toFixed(2), donem:bls[i].donem});
-    }
-    if (degisimler.length) return sonuc(degisimler);
-  }
+    if (!yillikSerisi.length) return null;
+    // Aylık % değişim — son iki ham endeks değerinden
+    const sonHam = rows[rows.length-1].deger;
+    const oncekiHam = rows[rows.length-2].deger;
+    const aylikPct = +(((sonHam-oncekiHam)/oncekiHam)*100).toFixed(2);
+    return sonuc(yillikSerisi, {degisim: aylikPct});
+  };
+  // FRED primary
+  const rows = await fredGet("PPIFIS", 14);
+  const r1 = hesapla(rows);
+  if (r1) return r1;
+  // BLS yedek
+  const bls = await blsGet("WPSFD4", 2);
+  const r2 = hesapla(bls);
+  if (r2) return r2;
   return null;
 }
 
@@ -244,19 +253,23 @@ async function fetchGSYIH() {
   return null;
 }
 
-// 7. PCE — YILLIK % değişim (Fed'in 2% hedefiyle karşılaştırılan değer)
+// 7. PCE — PCEPI endeks → guncel=yıllık %, degisim=aylık %
 async function fetchPCE() {
-  // FRED PCEPI endeksinden YILLIK % değişim hesapla (Fed hedefi %2)
   const rows = await fredGet("PCEPI", 14);
   if (rows?.length >= 13) {
-    const degisimler = [];
+    const yillikSerisi = [];
     for (let i = 12; i < rows.length; i++) {
       const pct = ((rows[i].deger - rows[i-12].deger) / rows[i-12].deger) * 100;
-      degisimler.push({tarih:rows[i].tarih, deger:+pct.toFixed(2), donem:rows[i].donem});
+      yillikSerisi.push({tarih:rows[i].tarih, deger:+pct.toFixed(2), donem:rows[i].donem});
     }
-    if (degisimler.length) return sonuc(degisimler);
+    if (yillikSerisi.length) {
+      const sonHam = rows[rows.length-1].deger;
+      const oncekiHam = rows[rows.length-2].deger;
+      const aylikPct = +(((sonHam-oncekiHam)/oncekiHam)*100).toFixed(2);
+      return sonuc(yillikSerisi, {degisim: aylikPct});
+    }
   }
-  // BEA yedek: T20804 Line 6 = aylık % değişim
+  // BEA yedek
   const beaRows = await beaGet("T20804", "6", "M", 3);
   if (beaRows?.length) return sonuc(beaRows);
   return null;
