@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════
-// Makro Ekonomi API v15 — CPI: NSA endeks + SA % (ikili seri)
+// Makro Ekonomi API v16 — CPI: BLS flat file (rebasing-proof, key yok)
 //
 // Tüm göstergeler önce FRED API'den çekilir (gerçek zamanlı).
 // FRED başarısız olursa BLS API yedek olarak devreye girer.
@@ -155,32 +155,54 @@ function sonuc(rows, ekstra={}) {
 // GÖSTERGELERİ ÇEK — FRED öncelikli, BLS yedek
 // ═══════════════════════════════════════════════════════════
 
-// 1. CPI — NSA endeks (333.02 manşet) + SA aylık % (0.60)
-// CUUR0000SA0 = NSA → manşet endeks değeri (medyanın açıkladığı)
-// CUSR0000SA0 = SA  → aylık % değişim için doğru seri
+// 1. CPI — BLS flat file (key yok, her zaman güncel, 1982-84=100 baz)
+// CUUR0000SA0 = CPI-U NSA, All Items, U.S. City Average
+// BLS Nisan 2026'da rebasing yaptı — flat file doğru baz yılını verir
 async function fetchCPI() {
-  const [blsNSA, blsSA] = await Promise.all([
-    blsGet("CUUR0000SA0", 2, true),
-    blsGet("CUSR0000SA0", 2, true),
-  ]);
-  if (blsNSA?.length >= 2 && blsSA?.length >= 2) {
-    const sonSA  = blsSA[blsSA.length-1];
-    const oncSA  = blsSA[blsSA.length-2];
-    const aylik  = sonSA.aylikPct != null ? sonSA.aylikPct
-                 : +(((sonSA.deger-oncSA.deger)/oncSA.deger)*100).toFixed(2);
-    const yillik = sonSA.yillikPct != null ? sonSA.yillikPct
-                 : blsSA.length >= 13
-                   ? +(((sonSA.deger-blsSA[blsSA.length-13].deger)/blsSA[blsSA.length-13].deger)*100).toFixed(2)
-                   : null;
-    return sonuc(blsNSA, {degisim: aylik, yillik});
-  }
-  const bls = blsNSA?.length >= 2 ? blsNSA : (blsSA?.length >= 2 ? blsSA : null);
-  if (bls) {
+  try {
+    // BLS public flat file — API key gerektirmez, rebasing sorunsuz
+    const r = await fetch(
+      "https://download.bls.gov/pub/time.series/cu/cu.data.1.AllItems",
+      { headers: { ...HDR, Accept: "text/plain" }, signal: AbortSignal.timeout(TO) }
+    );
+    if (r.ok) {
+      const txt = await r.text();
+      const lines = txt.split("\n").filter(l => l.includes("CUUR0000SA0"));
+      // Format: series_id  year  period  value  footnote
+      const parsed = lines
+        .map(l => { const p = l.trim().split(/\s+/); return p.length >= 4 ? p : null; })
+        .filter(p => p && p[2].startsWith("M") && p[2] !== "M13")
+        .map(p => ({
+          tarih: `${p[1]}-${p[2].replace("M","").padStart(2,"0")}`,
+          deger: parseFloat(p[3]),
+          donem: `${["","Ocak","Şubat","Mart","Nisan","Mayıs","Haziran","Temmuz","Ağustos","Eylül","Ekim","Kasım","Aralık"][parseInt(p[2].replace("M",""))]||p[2]} ${p[1]}`,
+        }))
+        .filter(p => !isNaN(p.deger))
+        .sort((a,b) => a.tarih.localeCompare(b.tarih))
+        .slice(-14);
+
+      if (parsed.length >= 2) {
+        const son = parsed[parsed.length-1].deger;
+        const onc = parsed[parsed.length-2].deger;
+        const yil = parsed.length >= 13 ? parsed[parsed.length-13].deger : null;
+        return sonuc(parsed, {
+          degisim: +(((son-onc)/onc)*100).toFixed(2),
+          yillik:  yil ? +(((son-yil)/yil)*100).toFixed(2) : null,
+        });
+      }
+    }
+  } catch(e) { console.error("CPI flat file:", e.message); }
+
+  // BLS API yedek
+  const bls = await blsGet("CUUR0000SA0", 2, true);
+  if (bls?.length >= 2) {
     const son = bls[bls.length-1], onc = bls[bls.length-2];
     const aylik = son.aylikPct != null ? son.aylikPct
                 : +(((son.deger-onc.deger)/onc.deger)*100).toFixed(2);
     return sonuc(bls, {degisim: aylik});
   }
+
+  // FRED son çare
   const rows = await fredGet("CPIAUCSL", 14);
   if (rows?.length >= 2) {
     const son = rows[rows.length-1].deger, onc = rows[rows.length-2].deger;
@@ -524,7 +546,7 @@ export default async function handler(req, res) {
     // Hangi kaynaktan veri geldi — şeffaflık için
     const kaynaklar={
       fedFaiz:   fedFaiz?"FRED:RIFSPFF_N.WW":"—",
-      cpi:       cpi?"BLS:CUUR0000SA0(NSA endeks)+CUSR0000SA0(SA%) / FRED":"—",
+      cpi:       cpi?"BLS flat file:CUUR0000SA0 / BLS API / FRED":"—",
       nfp:       nfp?"BLS:CES0000000001 / FRED:PAYEMS":"—",
       ppi:       ppi?"BLS:WPSFD4 (Final Demand) / FRED:PPIFIS":"—",
       isRate:    iscabasvurusu?"BLS:LNS14000000 / FRED:UNRATE":"—",
