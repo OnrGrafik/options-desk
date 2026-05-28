@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════
-// Makro Ekonomi API v11 — BLS calculations alanı (resmi % değerleri)
+// Makro Ekonomi API v12 — FRED primary CPI (BLS-mirror, SA, en güncel)
 //
 // Tüm göstergeler önce FRED API'den çekilir (gerçek zamanlı).
 // FRED başarısız olursa BLS API yedek olarak devreye girer.
@@ -97,10 +97,10 @@ async function blsGet(seriesId, yil=1, calculations=false) {
         tarih:`${x.year}-${(x.period||"M00").replace("M","").padStart(2,"0")}`,
         deger:parseFloat(x.value),
         donem:`${x.periodName||""} ${x.year}`.trim(),
-        // BLS calculations.pct_changes.1 = aylık %, .12 = yıllık %
-        aylikPct: x.calculations?.pct_changes?.["1"] !== undefined
+        // BLS calculations.pct_changes.1 = aylık %, .12 = yıllık % (sadece key varsa)
+        aylikPct: x.calculations?.pct_changes?.["1"] != null
                     ? parseFloat(x.calculations.pct_changes["1"]) : null,
-        yillikPct: x.calculations?.pct_changes?.["12"] !== undefined
+        yillikPct: x.calculations?.pct_changes?.["12"] != null
                     ? parseFloat(x.calculations.pct_changes["12"]) : null,
       }))
       .sort((a,b)=>a.tarih.localeCompare(b.tarih));
@@ -138,28 +138,31 @@ function sonuc(rows, ekstra={}) {
 // GÖSTERGELERİ ÇEK — FRED öncelikli, BLS yedek
 // ═══════════════════════════════════════════════════════════
 
-// 1. CPI — BLS calculations alanından doğrudan SA aylık % değişim
+// 1. CPI — FRED CPIAUCSL primary (SA, BLS-mirror) + BLS calculations yedek
+// CPIAUCSL = Consumer Price Index All Urban Consumers, Seasonally Adjusted
+// FRED bu seriyi BLS'den çekiyor, aynı SA değerleri.
 async function fetchCPI() {
-  // BLS primary: SA seri + calculations (BLS'in kendi hesabı)
-  // CUSR0000SA0 = CPI-U Seasonally Adjusted — Fed/medya bu değeri açıklar
+  const rows = await fredGet("CPIAUCSL", 14);
+  if (rows?.length >= 13) {
+    const son = rows[rows.length-1].deger;
+    const onceki = rows[rows.length-2].deger;
+    const ucYilOnce = rows[rows.length-13].deger;
+    const aylik = +(((son-onceki)/onceki)*100).toFixed(2);
+    const yillik = +(((son-ucYilOnce)/ucYilOnce)*100).toFixed(2);
+    return sonuc(rows, {degisim: aylik, yillik});
+  }
+  // BLS yedek (key gerekirse calculations da gelir)
   const bls = await blsGet("CUSR0000SA0", 1, true);
   if (bls?.length >= 2) {
     const son = bls[bls.length-1];
-    return sonuc(bls, {
-      degisim: son.aylikPct,           // BLS'in resmi aylık %
-      yillik:  son.yillikPct,          // BLS'in resmi yıllık %
-    });
-  }
-  // FRED yedek: CPIAUCSL endeks, aylık % elle hesaplanır
-  const rows = await fredGet("CPIAUCSL", 13);
-  if (rows?.length >= 2) {
-    const son = rows[rows.length-1].deger;
-    const onceki = rows[rows.length-2].deger;
-    const aylik = +(((son-onceki)/onceki)*100).toFixed(2);
-    const yillik = rows.length>=13
-      ? +(((son-rows[rows.length-13].deger)/rows[rows.length-13].deger)*100).toFixed(2)
-      : null;
-    return sonuc(rows, {degisim: aylik, yillik});
+    const aylikH = son.aylikPct !== null ? son.aylikPct : (() => {
+      const onceki = bls[bls.length-2].deger;
+      return +(((son.deger-onceki)/onceki)*100).toFixed(2);
+    })();
+    const yillikH = son.yillikPct !== null ? son.yillikPct : (bls.length>=13
+      ? +(((son.deger-bls[bls.length-13].deger)/bls[bls.length-13].deger)*100).toFixed(2)
+      : null);
+    return sonuc(bls, {degisim: aylikH, yillik: yillikH});
   }
   return null;
 }
@@ -487,7 +490,7 @@ export default async function handler(req, res) {
     // Hangi kaynaktan veri geldi — şeffaflık için
     const kaynaklar={
       fedFaiz:   fedFaiz?"FRED:RIFSPFF_N.WW":"—",
-      cpi:       cpi?"BLS:CUSR0000SA0 (SA) / FRED:CPIAUCSL":"—",
+      cpi:       cpi?"FRED:CPIAUCSL (SA) / BLS:CUSR0000SA0":"—",
       nfp:       nfp?"FRED:PAYEMS":"—",
       ppi:       ppi?"FRED:PPIFIS (Final Demand)":"—",
       isRate:    iscabasvurusu?"FRED:UNRATE":"—",
