@@ -167,7 +167,7 @@ async function fetchCPI() {
     );
     if (r.ok) {
       const txt = await r.text();
-      const lines = txt.split("\n").filter(l => l.includes("CUUR0000SA0"));
+      const lines = txt.split("\n").filter(l => l.startsWith("CUSR0000SA0"));
       // Format: series_id  year  period  value  footnote
       const parsed = lines
         .map(l => { const p = l.trim().split(/\s+/); return p.length >= 4 ? p : null; })
