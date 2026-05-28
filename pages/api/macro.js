@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════
-// Makro Ekonomi API v14 — BLS primary CPI, BEA primary PCE, FRED yedek
+// Makro Ekonomi API v15 — CPI: NSA endeks + SA % (ikili seri)
 //
 // Tüm göstergeler önce FRED API'den çekilir (gerçek zamanlı).
 // FRED başarısız olursa BLS API yedek olarak devreye girer.
@@ -155,35 +155,38 @@ function sonuc(rows, ekstra={}) {
 // GÖSTERGELERİ ÇEK — FRED öncelikli, BLS yedek
 // ═══════════════════════════════════════════════════════════
 
-// 1. CPI — BLS primary (yayın günü güncel) + FRED yedek
-// CUSR0000SA0 = CPI-U Seasonally Adjusted — Fed/medya resmi değer
+// 1. CPI — NSA endeks (333.02 manşet) + SA aylık % (0.60)
+// CUUR0000SA0 = NSA → manşet endeks değeri (medyanın açıkladığı)
+// CUSR0000SA0 = SA  → aylık % değişim için doğru seri
 async function fetchCPI() {
-  // BLS primary — key varsa calculations ile resmi % değerleri gelir
-  const bls = await blsGet("CUSR0000SA0", 2, true);
-  if (bls?.length >= 2) {
-    const son    = bls[bls.length-1];
-    const onceki = bls[bls.length-2];
-    // BLS key + calculations → resmi BLS % değeri (0.60 gibi)
-    const aylik  = son.aylikPct  != null ? son.aylikPct
-                 : +(((son.deger-onceki.deger)/onceki.deger)*100).toFixed(2);
-    const yillik = son.yillikPct != null ? son.yillikPct
-                 : bls.length >= 13
-                   ? +(((son.deger-bls[bls.length-13].deger)/bls[bls.length-13].deger)*100).toFixed(2)
+  const [blsNSA, blsSA] = await Promise.all([
+    blsGet("CUUR0000SA0", 2, true),
+    blsGet("CUSR0000SA0", 2, true),
+  ]);
+  if (blsNSA?.length >= 2 && blsSA?.length >= 2) {
+    const sonSA  = blsSA[blsSA.length-1];
+    const oncSA  = blsSA[blsSA.length-2];
+    const aylik  = sonSA.aylikPct != null ? sonSA.aylikPct
+                 : +(((sonSA.deger-oncSA.deger)/oncSA.deger)*100).toFixed(2);
+    const yillik = sonSA.yillikPct != null ? sonSA.yillikPct
+                 : blsSA.length >= 13
+                   ? +(((sonSA.deger-blsSA[blsSA.length-13].deger)/blsSA[blsSA.length-13].deger)*100).toFixed(2)
                    : null;
-    return sonuc(bls, {degisim: aylik, yillik});
+    return sonuc(blsNSA, {degisim: aylik, yillik});
   }
-  // FRED yedek
+  const bls = blsNSA?.length >= 2 ? blsNSA : (blsSA?.length >= 2 ? blsSA : null);
+  if (bls) {
+    const son = bls[bls.length-1], onc = bls[bls.length-2];
+    const aylik = son.aylikPct != null ? son.aylikPct
+                : +(((son.deger-onc.deger)/onc.deger)*100).toFixed(2);
+    return sonuc(bls, {degisim: aylik});
+  }
   const rows = await fredGet("CPIAUCSL", 14);
   if (rows?.length >= 2) {
-    const son    = rows[rows.length-1].deger;
-    const onceki = rows[rows.length-2].deger;
+    const son = rows[rows.length-1].deger, onc = rows[rows.length-2].deger;
     const yillik = rows.length >= 13
-      ? +(((son-rows[rows.length-13].deger)/rows[rows.length-13].deger)*100).toFixed(2)
-      : null;
-    return sonuc(rows, {
-      degisim: +(((son-onceki)/onceki)*100).toFixed(2),
-      yillik,
-    });
+      ? +(((son-rows[rows.length-13].deger)/rows[rows.length-13].deger)*100).toFixed(2) : null;
+    return sonuc(rows, {degisim: +(((son-onc)/onc)*100).toFixed(2), yillik});
   }
   return null;
 }
@@ -521,7 +524,7 @@ export default async function handler(req, res) {
     // Hangi kaynaktan veri geldi — şeffaflık için
     const kaynaklar={
       fedFaiz:   fedFaiz?"FRED:RIFSPFF_N.WW":"—",
-      cpi:       cpi?"BLS:CUSR0000SA0 (SA) / FRED:CPIAUCSL":"—",
+      cpi:       cpi?"BLS:CUUR0000SA0(NSA endeks)+CUSR0000SA0(SA%) / FRED":"—",
       nfp:       nfp?"BLS:CES0000000001 / FRED:PAYEMS":"—",
       ppi:       ppi?"BLS:WPSFD4 (Final Demand) / FRED:PPIFIS":"—",
       isRate:    iscabasvurusu?"BLS:LNS14000000 / FRED:UNRATE":"—",
